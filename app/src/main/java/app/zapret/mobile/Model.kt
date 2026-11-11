@@ -91,27 +91,35 @@ data class Settings(
 }
 
 object Presets {
+    // Group order matters: byedpi uses group 0 for UDP, host groups are matched by SNI, and the failover groups
+    // (-At,r,s) are used only after a connection times out / is reset / gets a TLS error.
+    private val V6 = """
+        # Wait 4s for the first server reply; the timeout is lifted once 2000 bytes arrived, so it only guards the
+        # handshake and never cuts large downloads/videos.
+        -T 4:2000
+        # Group 0 - excluded domains (same as list-nodesync.txt): no desync. Also carries the QUIC fake (-a1),
+        # because UDP always uses the first group.
+        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net" -a1
+        # Group 1 - YouTube / Google video: disoob/split + fake(md5sig). Confirmed working for YouTube video.
+        --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
+        # Group 2 - X / Twitter (pages, images, video, GIF): long split chain + TLS record + fake(md5sig)
+        --auto=none --hosts ":x.com twitter.com twimg.com t.co" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -S -a1
+        # Group 3 - Instagram / Facebook / Meta: fake SNI (random TLS fake) + TLS record split
+        --auto=none --hosts ":instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -n www.google.com -Qr -f-1 -r1+s -a1
+        # Group 4 - everything else: the proven strategy (disorder + TLS record split)
+        --auto=none --disorder 1 --tlsrec 1+s -a1
+        # Groups 5+ - failover (timeout / reset / TLS error): each tried in turn, any host
+        -At,r,s -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1
+        -At,r,s -q1+s -s29+s -o5+s -f-1 -S -a1
+        -At,r,s -f-1 -t8 -n www.google.com -s1+s -a1
+        -At,r,s -n www.google.com -Qr -d1 -f-1 -a1
+        -At,r,s -d1 -s1+s -r1+s -f-1 -t8 -a1
+        -At,r,s -o1 -d1 -r1+s -S -s1+s -d3+s -a1
+    """.trimIndent()
+
     val all = listOf(
-        Strategy(
-            "builtin-v6", "V6 (mobile port)",
-            """
-            # Wait 4s for the first server reply; the timeout is lifted once 2000 bytes arrived, so it only guards the
-            # handshake and never cuts large downloads/videos. On timeout/reset/TLS error the next matching group is used.
-            -T 4:2000
-            # Group 0 - excluded domains (same as list-nodesync.txt): no desync. Also carries the QUIC fake (-a1),
-            # because UDP always uses the first group.
-            --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net" -a1
-            # Group 1 - YouTube video + Instagram/Facebook: disoob/split + fake(md5sig). Confirmed working for YouTube video.
-            --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com instagram.com cdninstagram.com fbcdn.net facebook.com fb.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
-            # Group 2 - everything else: the proven strategy (disorder + TLS record split)
-            --auto=none --disorder 1 --tlsrec 1+s -a1
-            # Groups 3-5 - failover when a connection times out / is reset / gets a TLS error
-            -At,r,s -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1
-            -At,r,s -f-1 -t8 -n www.google.com -s1+s -a1
-            -At,r,s -d1 -s1+s -r1+s -f-1 -t8 -a1
-            """.trimIndent(),
-            true,
-        ),
+        Strategy("builtin-v6", "V6 (mobile port)", V6, true),
+        Strategy("builtin-v6-noudp", "V6 without QUIC/UDP (test)", "--no-udp\n" + V6, true),
         Strategy("builtin-c-chain", "Community: long split chain", "-d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1", true),
         Strategy("builtin-c-fake-split", "Community: fake + split", "-f-1 -t8 -n www.google.com -s1+s -a1", true),
         Strategy("builtin-c-oob-md5", "Community: disoob/split + fake md5", "-q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1", true),
