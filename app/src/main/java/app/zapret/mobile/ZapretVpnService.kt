@@ -79,9 +79,7 @@ class ZapretVpnService : VpnService() {
             dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.start() }
 
             val strategy = ArgParser.tokenize(cfg.getString("strategy"))
-            // --no-udp: QUIC/UDP is refused so apps (YouTube...) fall back to TCP, where the strategy applies
-            val block = if (cfg.optBoolean("blockUdp", true)) listOf("--no-udp") else emptyList()
-            val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + block + strategy
+            val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + strategy
             Thread({ val rc = Native.runProxy(args.toTypedArray()); VpnLog.w("proxy exited rc=$rc") }, "byedpi").start()
             if (!waitForPort(SOCKS_PORT)) error("proxy did not start - check the strategy syntax")
             VpnLog.w("proxy listening on 127.0.0.1:$SOCKS_PORT")

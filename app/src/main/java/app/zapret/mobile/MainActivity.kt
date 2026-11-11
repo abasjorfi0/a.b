@@ -111,13 +111,6 @@ class MainActivity : ComponentActivity() {
             }, modifier = Modifier.fillMaxWidth()) { Text(if (running) "Stop" else "Start") }
             Text("Strategy: ${chosen.name}")
             Text("DNS: ${s.dnsMode}   •   Apps: ${s.appMode.name.lowercase()} (${s.apps.size})")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = s.blockUdp, onCheckedChange = { update(s.copy(blockUdp = it)) })
-                Column(Modifier.padding(start = 8.dp)) {
-                    Text("Block QUIC/UDP (fixes YouTube video)")
-                    Text("Turn off if you need voice/video calls (WhatsApp, Discord voice).", style = MaterialTheme.typography.bodySmall)
-                }
-            }
             OutlinedButton(onClick = {
                 runCatching {
                     startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
