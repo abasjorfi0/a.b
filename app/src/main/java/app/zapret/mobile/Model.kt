@@ -31,7 +31,7 @@ object Resolvers {
 }
 
 data class Settings(
-    val strategyId: String = "builtin-disorder-tlsrec",
+    val strategyId: String = "builtin-v6",
     val dnsMode: DnsMode = DnsMode.AUTO,
     val dohUrl: String = "https://doh.ffmuc.net/dns-query",
     val plainDns: String = "8.8.8.8",
@@ -69,6 +69,20 @@ data class Settings(
 
 object Presets {
     val all = listOf(
+        Strategy(
+            "builtin-v6", "V6 (mobile port)",
+            """
+            # Excluded domains (same as list-nodesync.txt): no desync for these
+            --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net"
+            # Strategy 1: fake (md5sig) + disorder at 1 and SNI middle
+            --auto=none --md5sig --fake-tls-mod rand --fake-sni www.google.com --fake 1 --fake 0+sm
+            # Strategy 2 (used when 1 fails): low-TTL fake + split
+            --auto=torst --ttl 6 --fake-tls-mod rand --fake-sni fonts.google.com --fake 1 --split 0+sm
+            # Strategy 3 (used when 2 fails): fake + TLS record split
+            --auto=torst --ttl 10 --fake-tls-mod rand --fake-sni www.google.com --fake 0+sm --tlsrec 1+s
+            """.trimIndent(),
+            true,
+        ),
         Strategy("builtin-disorder-tlsrec", "Disorder + TLS record", "--disorder 1 --tlsrec 1+s", true),
         Strategy("builtin-split-sni", "Split at SNI", "--split 1+s", true),
         Strategy("builtin-fake-ttl", "Fake packet (low TTL)", "--fake -1 --ttl 8", true),

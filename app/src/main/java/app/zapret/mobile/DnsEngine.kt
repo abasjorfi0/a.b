@@ -9,22 +9,20 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.Proxy
-import java.net.Socket
 import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import javax.net.SocketFactory
 
 /**
  * Local DNS engine on 127.0.0.1:PORT. byedpi's resolver (zp_resolver.c) sends it wire-format queries.
  * Modes: SYSTEM = plain UDP DNS to a chosen server, DOH = one DoH endpoint, AUTO = fastest working DoH
  * (probed at start, re-probed when everything fails), with plain DNS as the last resort.
  *
- * DoH requests are sent THROUGH the local byedpi proxy first (so the active strategy also unblocks the
- * resolver itself), and directly only if that fails. The :vpn process is excluded from the VPN, so direct
- * sockets really go out directly.
+ * DoH requests go out directly (this :vpn process is excluded from the VPN). They must NOT go through the
+ * local byedpi proxy: byedpi resolves names synchronously through this engine, so a request that waits for
+ * byedpi while byedpi waits for us would stall until timeout. Answers are cached to keep lookups fast.
  */
 class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private val plainDns: String) {
     companion object {
@@ -44,18 +42,8 @@ class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private v
         }
     }
 
-    private val proxyFactory = object : SocketFactory() {
-        override fun createSocket(): Socket =
-            Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", ZapretVpnService.SOCKS_PORT)))
-        override fun createSocket(host: String?, port: Int): Socket = throw UnsupportedOperationException()
-        override fun createSocket(host: String?, port: Int, la: InetAddress?, lp: Int): Socket = throw UnsupportedOperationException()
-        override fun createSocket(host: InetAddress?, port: Int): Socket = throw UnsupportedOperationException()
-        override fun createSocket(a: InetAddress?, port: Int, la: InetAddress?, lp: Int): Socket = throw UnsupportedOperationException()
-    }
-
     private val direct = OkHttpClient.Builder().dns(bootstrap)
         .connectTimeout(4, TimeUnit.SECONDS).readTimeout(4, TimeUnit.SECONDS).build()
-    private val proxied = direct.newBuilder().socketFactory(proxyFactory).build()
 
     private val pool = Executors.newCachedThreadPool()
     @Volatile private var sock: DatagramSocket? = null
@@ -86,7 +74,26 @@ class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private v
 
     fun stop() { sock?.close(); pool.shutdownNow() }
 
-    private fun resolve(q: ByteArray): ByteArray? = when (mode) {
+    private class Cached(val data: ByteArray, val expires: Long)
+    private val cache = ConcurrentHashMap<String, Cached>()
+    private val cacheMs = 5 * 60 * 1000L
+
+    private fun resolve(q: ByteArray): ByteArray? {
+        if (q.size < 13) return resolveUncached(q)
+        val key = String(q, 12, q.size - 12, Charsets.ISO_8859_1)
+        cache[key]?.let { c ->
+            if (c.expires > System.currentTimeMillis()) {
+                val a = c.data.copyOf(); a[0] = q[0]; a[1] = q[1]; return a
+            }
+            cache.remove(key)
+        }
+        val a = resolveUncached(q) ?: return null
+        val ok = a.size > 12 && (a[3].toInt() and 0x0F) == 0 && ((a[6].toInt() shl 8) or (a[7].toInt() and 0xFF)) != 0
+        if (ok) cache[key] = Cached(a, System.currentTimeMillis() + cacheMs)
+        return a
+    }
+
+    private fun resolveUncached(q: ByteArray): ByteArray? = when (mode) {
         DnsMode.SYSTEM -> plain(q)
         DnsMode.DOH -> doh(resolvers.first { it.url == dohUrl }, q) ?: plain(q)
         DnsMode.AUTO -> {
@@ -97,18 +104,13 @@ class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private v
         }
     }
 
-    private fun doh(r: DohResolver, q: ByteArray): ByteArray? {
-        for ((label, client) in listOf("via-proxy" to proxied, "direct" to direct)) {
-            try {
-                val req = Request.Builder().url(r.url).header("Accept", "application/dns-message")
-                    .post(q.toRequestBody(DNS_MSG)).build()
-                val body = client.newCall(req).execute().use { if (it.isSuccessful) it.body?.bytes() else null }
-                if (body != null) return body
-            } catch (e: Exception) {
-                if (logged.get() < 25) VpnLog.w("DoH ${r.name} $label failed: ${e.javaClass.simpleName} ${e.message?.take(60)}")
-            }
-        }
-        return null
+    private fun doh(r: DohResolver, q: ByteArray): ByteArray? = try {
+        val req = Request.Builder().url(r.url).header("Accept", "application/dns-message")
+            .post(q.toRequestBody(DNS_MSG)).build()
+        direct.newCall(req).execute().use { if (it.isSuccessful) it.body?.bytes() else null }
+    } catch (e: Exception) {
+        if (logged.get() < 25) VpnLog.w("DoH ${r.name} failed: ${e.javaClass.simpleName} ${e.message?.take(60)}")
+        null
     }
 
     private fun plain(q: ByteArray): ByteArray? = try {
