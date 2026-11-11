@@ -1,0 +1,6 @@
+[submodule "app/src/main/jni/byedpi"]
+	path = app/src/main/jni/byedpi
+	url = https://github.com/hufrea/byedpi
+[submodule "app/src/main/jni/hev-socks5-tunnel"]
+	path = app/src/main/jni/hev-socks5-tunnel
+	url = https://github.com/heiher/hev-socks5-tunnel
