@@ -1,6 +1,12 @@
 package app.zapret.mobile
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.os.Process
@@ -26,14 +32,39 @@ class ZapretVpnService : VpnService() {
         const val EXTRA_ERROR = "error"
         const val SOCKS_PORT = 1080
         private const val TAG = "zapret-vpn"
+        private const val CHANNEL = "zapret"
+        private const val NOTIF_ID = 1
     }
 
     private var tun: ParcelFileDescriptor? = null
     private var dns: DnsEngine? = null
     private val tproxy by lazy { TProxyService() }
 
+    private fun startForegroundNotification() {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(CHANNEL, "Zapret Mobile", NotificationManager.IMPORTANCE_LOW))
+        val stop = PendingIntent.getService(
+            this, 0, Intent(this, ZapretVpnService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val open = PendingIntent.getActivity(
+            this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = (if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else Notification.Builder(this))
+            .setContentTitle("Zapret Mobile is running")
+            .setContentText("Tap to open. Runs in the background until you stop it.")
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setOngoing(true)
+            .setContentIntent(open)
+            .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Stop", stop).build())
+            .build()
+        if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        else startForeground(NOTIF_ID, n)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
+        startForegroundNotification()
         val cfg = intent?.getStringExtra(EXTRA_CONFIG)
         if (cfg == null) { shutdown(); return START_NOT_STICKY }
         Thread { start(JSONObject(cfg)) }.start()
@@ -48,7 +79,9 @@ class ZapretVpnService : VpnService() {
             dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.start() }
 
             val strategy = ArgParser.tokenize(cfg.getString("strategy"))
-            val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + strategy
+            // --no-udp: QUIC/UDP is refused so apps (YouTube...) fall back to TCP, where the strategy applies
+            val block = if (cfg.optBoolean("blockUdp", true)) listOf("--no-udp") else emptyList()
+            val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + block + strategy
             Thread({ val rc = Native.runProxy(args.toTypedArray()); VpnLog.w("proxy exited rc=$rc") }, "byedpi").start()
             if (!waitForPort(SOCKS_PORT)) error("proxy did not start - check the strategy syntax")
             VpnLog.w("proxy listening on 127.0.0.1:$SOCKS_PORT")
@@ -88,6 +121,7 @@ class ZapretVpnService : VpnService() {
             VpnLog.w("VPN interface established (apps: ${cfg.getString("appMode")} ${apps.size})")
             if (!tproxy.TProxyStartService(yaml.absolutePath, tun!!.fd)) error("tunnel failed to start")
             VpnLog.w("tunnel started")
+            runCatching { File(filesDir, "running").writeText("1") }
             broadcast(true, null)
             Thread({
                 var last = -1L
@@ -118,6 +152,7 @@ class ZapretVpnService : VpnService() {
 
     private fun shutdown() {
         VpnLog.w("stopping")
+        runCatching { File(filesDir, "running").delete() }
         runCatching { tproxy.TProxyStopService() }
         runCatching { dns?.stop() }
         runCatching { tun?.close() }

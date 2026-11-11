@@ -1,5 +1,7 @@
 package app.zapret.mobile
 
+import android.Manifest
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -7,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.VpnService
+import androidx.core.content.ContextCompat
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -42,11 +46,22 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         else registerReceiver(stateReceiver, filter)
         val store = Store(this)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         setContent {
             MaterialTheme(colorScheme = if (androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) { App(store) }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The VPN lives in its own process and keeps running when this screen is closed: re-detect it.
+        val alive = (getSystemService(ACTIVITY_SERVICE) as ActivityManager).runningAppProcesses
+            ?.any { it.processName == "$packageName:vpn" } == true
+        running = alive && java.io.File(filesDir, "running").exists()
     }
 
     override fun onDestroy() { unregisterReceiver(stateReceiver); super.onDestroy() }
@@ -96,6 +111,18 @@ class MainActivity : ComponentActivity() {
             }, modifier = Modifier.fillMaxWidth()) { Text(if (running) "Stop" else "Start") }
             Text("Strategy: ${chosen.name}")
             Text("DNS: ${s.dnsMode}   •   Apps: ${s.appMode.name.lowercase()} (${s.apps.size})")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = s.blockUdp, onCheckedChange = { update(s.copy(blockUdp = it)) })
+                Column(Modifier.padding(start = 8.dp)) {
+                    Text("Block QUIC/UDP (fixes YouTube video)")
+                    Text("Turn off if you need voice/video calls (WhatsApp, Discord voice).", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            OutlinedButton(onClick = {
+                runCatching {
+                    startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Allow running in the background (battery)") }
             var log by remember { mutableStateOf("") }
             LaunchedEffect(Unit) {
                 while (true) { log = VpnLog.read(filesDir); kotlinx.coroutines.delay(1500) }
@@ -110,9 +137,10 @@ class MainActivity : ComponentActivity() {
 
     private fun startVpn(store: Store, s: Settings, strategies: List<Strategy>) {
         val chosen = strategies.firstOrNull { it.id == s.strategyId } ?: strategies.first()
-        startService(
+        ContextCompat.startForegroundService(
+            this,
             Intent(this, ZapretVpnService::class.java).setAction(ZapretVpnService.ACTION_START)
-                .putExtra(ZapretVpnService.EXTRA_CONFIG, s.toJson(chosen.args))
+                .putExtra(ZapretVpnService.EXTRA_CONFIG, s.toJson(chosen.args)),
         )
     }
 

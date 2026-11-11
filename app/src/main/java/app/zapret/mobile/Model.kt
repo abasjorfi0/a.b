@@ -60,6 +60,7 @@ data class Settings(
     val plainDns: String = "8.8.8.8",
     val appMode: AppMode = AppMode.EXCLUDE,
     val apps: Set<String> = emptySet(),
+    val blockUdp: Boolean = true,
 ) {
     fun toJson(strategyArgs: String): String = JSONObject()
         .put("strategy", strategyArgs)
@@ -68,11 +69,13 @@ data class Settings(
         .put("plainDns", plainDns)
         .put("appMode", appMode.name)
         .put("apps", JSONArray(apps.toList()))
+        .put("blockUdp", blockUdp)
         .toString()
 
     fun toStored(): JSONObject = JSONObject()
         .put("strategyId", strategyId).put("dnsMode", dnsMode.name).put("dohUrl", dohUrl)
         .put("plainDns", plainDns).put("appMode", appMode.name).put("apps", JSONArray(apps.toList()))
+        .put("blockUdp", blockUdp)
 
     companion object {
         fun fromStored(o: JSONObject): Settings {
@@ -85,6 +88,7 @@ data class Settings(
                 plainDns = o.optString("plainDns", d.plainDns),
                 appMode = runCatching { AppMode.valueOf(o.optString("appMode")) }.getOrDefault(d.appMode),
                 apps = apps,
+                blockUdp = o.optBoolean("blockUdp", d.blockUdp),
             )
         }
     }
@@ -95,14 +99,18 @@ object Presets {
         Strategy(
             "builtin-v6", "V6 (mobile port)",
             """
-            # Excluded domains (same as list-nodesync.txt): no desync for these
+            # Wait 4s for the first server reply; on timeout/reset the next group below is used
+            -T 4
+            # Group 0 - excluded domains (same as list-nodesync.txt): no desync
             --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net"
-            # Strategy 1: fake (md5sig) + disorder at 1 and SNI middle
-            --auto=none --md5sig --fake-tls-mod rand --fake-sni www.google.com --fake 1 --fake 0+sm
-            # Strategy 2 (used when 1 fails): low-TTL fake + split
-            --auto=torst --ttl 6 --fake-tls-mod rand --fake-sni fonts.google.com --fake 1 --split 0+sm
-            # Strategy 3 (used when 2 fails): fake + TLS record split
-            --auto=torst --ttl 10 --fake-tls-mod rand --fake-sni www.google.com --fake 0+sm --tlsrec 1+s
+            # Group 1 - default: the proven strategy (disorder + TLS record split)
+            --auto=none --disorder 1 --tlsrec 1+s
+            # Group 2 - on failure: split at the SNI + TLS record split
+            --auto=torst --split 1+s --tlsrec 1+s
+            # Group 3 - on failure: fake packet with MD5 signature (server drops it) + TLS record split
+            --auto=torst --fake -1 --md5sig --tlsrec 1+s
+            # Group 4 - on failure: low-TTL fake + disorder + TLS record split
+            --auto=torst --fake -1 --ttl 8 --disorder 1 --tlsrec 1+s
             """.trimIndent(),
             true,
         ),
