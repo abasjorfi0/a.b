@@ -16,7 +16,12 @@ data class DohResolver(val name: String, val url: String, val ips: List<String>)
 
 object Resolvers {
     // Bootstrap IPs are included so the DoH hostname never needs a (possibly poisoned) DNS lookup.
+    // First four come from the DNSCrypt public-resolvers list and are the ones confirmed working on the user's PC.
     val builtin = listOf(
+        DohResolver("digitalsize", "https://dns.digitalsize.net/dns-query", listOf("94.130.135.203")),
+        DohResolver("dnsforge-nofilter", "https://blank.dnsforge.de/dns-query", listOf("138.199.149.249")),
+        DohResolver("dnshome-de", "https://dns.dnshome.de/dns-query", emptyList()),
+        DohResolver("ffmuc", "https://doh.ffmuc.net/dns-query", listOf("5.1.66.255")),
         DohResolver("Cloudflare", "https://cloudflare-dns.com/dns-query", listOf("1.1.1.1", "1.0.0.1")),
         DohResolver("Google", "https://dns.google/dns-query", listOf("8.8.8.8", "8.8.4.4")),
         DohResolver("Quad9", "https://dns.quad9.net/dns-query", listOf("9.9.9.9", "149.112.112.112")),
@@ -28,7 +33,7 @@ object Resolvers {
 data class Settings(
     val strategyId: String = "builtin-disorder-tlsrec",
     val dnsMode: DnsMode = DnsMode.AUTO,
-    val dohUrl: String = Resolvers.builtin[0].url,
+    val dohUrl: String = "https://doh.ffmuc.net/dns-query",
     val plainDns: String = "8.8.8.8",
     val appMode: AppMode = AppMode.EXCLUDE,
     val apps: Set<String> = emptySet(),
