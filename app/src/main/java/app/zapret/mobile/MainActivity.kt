@@ -96,6 +96,15 @@ class MainActivity : ComponentActivity() {
             }, modifier = Modifier.fillMaxWidth()) { Text(if (running) "Stop" else "Start") }
             Text("Strategy: ${chosen.name}")
             Text("DNS: ${s.dnsMode}   •   Apps: ${s.appMode.name.lowercase()} (${s.apps.size})")
+            var log by remember { mutableStateOf("") }
+            LaunchedEffect(Unit) {
+                while (true) { log = VpnLog.read(filesDir); kotlinx.coroutines.delay(1500) }
+            }
+            Text("Diagnostics", style = MaterialTheme.typography.titleSmall)
+            Card(Modifier.fillMaxWidth()) {
+                Text(log.ifBlank { "(no log yet)" }, Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            }
         }
     }
 

@@ -24,7 +24,7 @@ class ZapretVpnService : VpnService() {
         const val ACTION_STATE = "app.zapret.mobile.STATE"
         const val EXTRA_RUNNING = "running"
         const val EXTRA_ERROR = "error"
-        private const val SOCKS_PORT = 1080
+        const val SOCKS_PORT = 1080
         private const val TAG = "zapret-vpn"
     }
 
@@ -42,13 +42,16 @@ class ZapretVpnService : VpnService() {
 
     private fun start(cfg: JSONObject) {
         try {
+            VpnLog.init(filesDir, reset = true)
             val dnsMode = DnsMode.valueOf(cfg.getString("dnsMode"))
+            VpnLog.w("starting; strategy: ${cfg.getString("strategy")}")
             dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns")).also { it.start() }
 
             val strategy = ArgParser.tokenize(cfg.getString("strategy"))
             val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + strategy
-            Thread({ Native.runProxy(args.toTypedArray()); Log.w(TAG, "proxy thread ended") }, "byedpi").start()
+            Thread({ val rc = Native.runProxy(args.toTypedArray()); VpnLog.w("proxy exited rc=$rc") }, "byedpi").start()
             if (!waitForPort(SOCKS_PORT)) error("proxy did not start - check the strategy syntax")
+            VpnLog.w("proxy listening on 127.0.0.1:$SOCKS_PORT")
 
             val b = Builder().setSession("Zapret Mobile").setMtu(1500)
                 .addAddress("198.18.0.1", 32).addRoute("0.0.0.0", 0).addDnsServer("198.18.0.2")
@@ -82,10 +85,24 @@ class ZapretVpnService : VpnService() {
                   log-level: warn
                 """.trimIndent()
             )
+            VpnLog.w("VPN interface established (apps: ${cfg.getString("appMode")} ${apps.size})")
             if (!tproxy.TProxyStartService(yaml.absolutePath, tun!!.fd)) error("tunnel failed to start")
+            VpnLog.w("tunnel started")
             broadcast(true, null)
+            Thread({
+                var last = -1L
+                while (tun != null) {
+                    Thread.sleep(3000)
+                    val st = runCatching { tproxy.TProxyGetStats() }.getOrNull() ?: continue
+                    if (st.size >= 4 && st[0] + st[2] != last) {
+                        last = st[0] + st[2]
+                        VpnLog.w("traffic: from apps ${st[0]} pkts/${st[1] / 1024} KB, to apps ${st[2]} pkts/${st[3] / 1024} KB")
+                    }
+                }
+            }, "stats").start()
         } catch (e: Throwable) {
             Log.e(TAG, "start failed", e)
+            VpnLog.w("START FAILED: ${e.javaClass.simpleName}: ${e.message}")
             broadcast(false, e.message)
             shutdown()
         }
@@ -100,9 +117,11 @@ class ZapretVpnService : VpnService() {
     }
 
     private fun shutdown() {
+        VpnLog.w("stopping")
         runCatching { tproxy.TProxyStopService() }
         runCatching { dns?.stop() }
         runCatching { tun?.close() }
+        tun = null
         broadcast(false, null)
         stopSelf()
         // byedpi cannot be restarted in-process (global state) - end this process; the next start gets a fresh one.
