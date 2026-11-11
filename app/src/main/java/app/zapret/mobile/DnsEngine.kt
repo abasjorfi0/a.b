@@ -24,20 +24,32 @@ import java.util.concurrent.atomic.AtomicInteger
  * local byedpi proxy: byedpi resolves names synchronously through this engine, so a request that waits for
  * byedpi while byedpi waits for us would stall until timeout. Answers are cached to keep lookups fast.
  */
-class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private val plainDns: String) {
+class DnsEngine(
+    private val mode: DnsMode, private val dohUrl: String, private val plainDns: String,
+    private val all: List<DohResolver>,
+) {
     companion object {
         const val PORT = 5300
         private val DNS_MSG = "application/dns-message".toMediaType()
     }
 
     private val resolvers: List<DohResolver> =
-        Resolvers.builtin + if (Resolvers.builtin.none { it.url == dohUrl }) listOf(DohResolver("custom", dohUrl, emptyList())) else emptyList()
+        all + if (all.none { it.url == dohUrl }) listOf(DohResolver("custom", dohUrl, emptyList())) else emptyList()
+    private val ipsByHost: Map<String, List<String>> = resolvers.groupBy { it.url.substringAfter("//").substringBefore("/").substringBefore(":") }
+        .mapValues { e -> e.value.flatMap { it.ips }.distinct() }
+
+    /** AUTO mode probes the favorites plus a random sample of the rest (probing hundreds at once would be wasteful). */
+    private fun candidates(): List<DohResolver> {
+        val fav = Resolvers.builtin.mapNotNull { f -> resolvers.firstOrNull { it.url == f.url } }
+        val rest = resolvers.filter { r -> fav.none { it.url == r.url } && r.ips.isNotEmpty() }.shuffled().take(12)
+        return fav + rest
+    }
 
     // Resolver hostnames map to their bootstrap IPs, so no DNS lookup is needed (and the SOCKS proxy only ever
     // receives IP addresses, never a name that would loop back into this engine).
     private val bootstrap = object : Dns {
         override fun lookup(hostname: String): List<InetAddress> {
-            val ips = resolvers.firstOrNull { it.url.contains("//$hostname/") }?.ips.orEmpty()
+            val ips = ipsByHost[hostname].orEmpty()
             return if (ips.isNotEmpty()) ips.map { InetAddress.getByName(it) } else Dns.SYSTEM.lookup(hostname)
         }
     }
@@ -47,7 +59,7 @@ class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private v
 
     private val pool = Executors.newCachedThreadPool()
     @Volatile private var sock: DatagramSocket? = null
-    @Volatile private var ranked: List<DohResolver> = resolvers
+    @Volatile private var ranked: List<DohResolver> = Resolvers.builtin.take(4).mapNotNull { f -> resolvers.firstOrNull { it.url == f.url } }
     private val logged = AtomicInteger(0)
 
     fun start() {
@@ -127,7 +139,7 @@ class DnsEngine(private val mode: DnsMode, private val dohUrl: String, private v
         val q = byteArrayOf(0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e'.code.toByte(), 'x'.code.toByte(), 'a'.code.toByte(),
             'm'.code.toByte(), 'p'.code.toByte(), 'l'.code.toByte(), 'e'.code.toByte(), 3, 'c'.code.toByte(), 'o'.code.toByte(),
             'm'.code.toByte(), 0, 0, 1, 0, 1)
-        val futures = resolvers.map { r ->
+        val futures = candidates().map { r ->
             r to pool.submit(Callable {
                 val t0 = System.nanoTime()
                 if (doh(r, q) != null) System.nanoTime() - t0 else Long.MAX_VALUE

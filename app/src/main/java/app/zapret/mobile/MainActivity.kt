@@ -202,12 +202,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (s.dnsMode == DnsMode.DOH) {
-                Resolvers.builtin.forEach { r ->
-                    Row(Modifier.fillMaxWidth().clickable { update(s.copy(dohUrl = r.url)) }, verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = s.dohUrl == r.url, onClick = { update(s.copy(dohUrl = r.url)) }); Text("${r.name}  —  ${r.url}")
+                val all = remember { Resolvers.all(this@MainActivity) }
+                var q by remember { mutableStateOf("") }
+                Text("Selected: ${all.firstOrNull { it.url == s.dohUrl }?.name ?: s.dohUrl}", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(q, { q = it }, label = { Text("Search ${all.size} DoH resolvers") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 360.dp)) {
+                    items(all.filter { q.isBlank() || it.name.contains(q, true) || it.url.contains(q, true) }, key = { it.url + it.name }) { r ->
+                        Row(Modifier.fillMaxWidth().clickable { update(s.copy(dohUrl = r.url)) }, verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = s.dohUrl == r.url, onClick = { update(s.copy(dohUrl = r.url)) })
+                            Column { Text(r.name); Text(r.url, style = MaterialTheme.typography.bodySmall) }
+                        }
                     }
                 }
-                var custom by remember { mutableStateOf(if (Resolvers.builtin.any { it.url == s.dohUrl }) "" else s.dohUrl) }
+                var custom by remember { mutableStateOf(if (all.any { it.url == s.dohUrl }) "" else s.dohUrl) }
                 OutlinedTextField(custom, { custom = it; if (it.startsWith("https://")) update(s.copy(dohUrl = it)) },
                     label = { Text("Custom DoH URL (https://…)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             }

@@ -15,6 +15,7 @@ enum class AppMode { EXCLUDE, ONLY }
 data class DohResolver(val name: String, val url: String, val ips: List<String>)
 
 object Resolvers {
+    @Volatile internal var allCache: List<DohResolver>? = null
     // Bootstrap IPs are included so the DoH hostname never needs a (possibly poisoned) DNS lookup.
     // First four come from the DNSCrypt public-resolvers list and are the ones confirmed working on the user's PC.
     val builtin = listOf(
@@ -28,6 +29,28 @@ object Resolvers {
         DohResolver("AdGuard", "https://dns.adguard-dns.com/dns-query", listOf("94.140.14.14", "94.140.15.15")),
         DohResolver("Mullvad", "https://dns.mullvad.net/dns-query", listOf("194.242.2.2")),
     )
+}
+
+/** All DoH resolvers: favorites first, then the full DNSCrypt public-resolvers list (bundled asset). */
+fun Resolvers.all(ctx: Context): List<DohResolver> = allCache ?: synchronized(this) {
+    allCache ?: run {
+        val extra = runCatching {
+            val a = JSONArray(ctx.assets.open("doh-resolvers.json").bufferedReader().use { it.readText() })
+            (0 until a.length()).map {
+                val o = a.getJSONObject(it)
+                val ips = o.getJSONArray("i").let { x -> (0 until x.length()).map { k -> x.getString(k) } }
+                DohResolver(o.getString("n"), o.getString("u"), ips)
+            }
+        }.getOrDefault(emptyList())
+        val merged = LinkedHashMap<String, DohResolver>()
+        builtin.forEach { merged[it.url] = it }
+        // keep one entry per URL, preferring the one that has a bootstrap IP
+        extra.filter { !it.name.endsWith("ipv6") }.sortedBy { it.name.lowercase() }.forEach { r ->
+            val cur = merged[r.url]
+            if (cur == null || (cur.ips.isEmpty() && r.ips.isNotEmpty())) merged[r.url] = r
+        }
+        merged.values.toList().also { allCache = it }
+    }
 }
 
 data class Settings(

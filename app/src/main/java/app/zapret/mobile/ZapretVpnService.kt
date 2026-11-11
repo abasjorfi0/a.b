@@ -45,7 +45,7 @@ class ZapretVpnService : VpnService() {
             VpnLog.init(filesDir, reset = true)
             val dnsMode = DnsMode.valueOf(cfg.getString("dnsMode"))
             VpnLog.w("starting; strategy: ${cfg.getString("strategy")}")
-            dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns")).also { it.start() }
+            dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.start() }
 
             val strategy = ArgParser.tokenize(cfg.getString("strategy"))
             val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + strategy
