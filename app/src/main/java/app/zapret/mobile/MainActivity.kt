@@ -14,11 +14,15 @@ import android.net.VpnService
 import androidx.core.content.ContextCompat
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -97,7 +101,7 @@ class MainActivity : ComponentActivity() {
             if (r.resultCode == RESULT_OK) startVpn(store, s, strategies)
         }
         val chosen = strategies.firstOrNull { it.id == s.strategyId } ?: strategies.first()
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(if (running) "Running" else "Stopped", style = MaterialTheme.typography.headlineMedium)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(onClick = {
@@ -117,13 +121,28 @@ class MainActivity : ComponentActivity() {
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text("Allow running in the background (battery)") }
             var log by remember { mutableStateOf("") }
+            val logScroll = rememberScrollState()
             LaunchedEffect(Unit) {
-                while (true) { log = VpnLog.read(filesDir); kotlinx.coroutines.delay(1500) }
+                while (true) { log = VpnLog.read(filesDir, 400); kotlinx.coroutines.delay(1500) }
             }
-            Text("Diagnostics", style = MaterialTheme.typography.titleSmall)
-            Card(Modifier.fillMaxWidth()) {
-                Text(log.ifBlank { "(no log yet)" }, Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            LaunchedEffect(log) {
+                // follow the end of the log unless the user scrolled up to read
+                if (logScroll.maxValue - logScroll.value < 150) logScroll.scrollTo(logScroll.maxValue)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Diagnostics", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = {
+                    (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("zapret log", log))
+                    Toast.makeText(this@MainActivity, "Log copied", Toast.LENGTH_SHORT).show()
+                }) { Text("Copy all") }
+                TextButton(onClick = { runCatching { java.io.File(filesDir, "vpn.log").writeText("") }; log = "" }) { Text("Clear") }
+            }
+            Card(Modifier.fillMaxWidth().height(320.dp)) {
+                SelectionContainer {
+                    Text(log.ifBlank { "(no log yet)" }, Modifier.fillMaxWidth().verticalScroll(logScroll).padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                }
             }
         }
     }

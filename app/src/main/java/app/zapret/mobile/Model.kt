@@ -100,14 +100,13 @@ object Presets {
             # Group 0 - excluded domains (same as list-nodesync.txt): no desync. Also carries the QUIC fake (-a1),
             # because UDP always uses the first group.
             --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net" -a1
-            # Group 1 - YouTube video + Instagram/Facebook: long disorder/split chain (like zapret multidisorder).
-            # Community-proven on Android for googlevideo.
-            --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com instagram.com cdninstagram.com fbcdn.net facebook.com fb.com" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1
+            # Group 1 - YouTube video + Instagram/Facebook: disoob/split + fake(md5sig). Confirmed working for YouTube video.
+            --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com instagram.com cdninstagram.com fbcdn.net facebook.com fb.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
             # Group 2 - everything else: the proven strategy (disorder + TLS record split)
             --auto=none --disorder 1 --tlsrec 1+s -a1
             # Groups 3-5 - failover when a connection times out / is reset / gets a TLS error
+            -At,r,s -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1
             -At,r,s -f-1 -t8 -n www.google.com -s1+s -a1
-            -At,r,s -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
             -At,r,s -d1 -s1+s -r1+s -f-1 -t8 -a1
             """.trimIndent(),
             true,
