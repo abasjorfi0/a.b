@@ -79,7 +79,9 @@ class ZapretVpnService : VpnService() {
             dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.start() }
 
             val strategy = ArgParser.tokenize(cfg.getString("strategy"))
-            val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString()) + strategy
+            // -x 1: byedpi logs its decisions (groups, failover, timeouts) to logcat; we mirror them into the app log
+            val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString(), "-x", "1") + strategy
+            startNativeLogReader()
             Thread({ val rc = Native.runProxy(args.toTypedArray()); VpnLog.w("proxy exited rc=$rc") }, "byedpi").start()
             if (!waitForPort(SOCKS_PORT)) error("proxy did not start - check the strategy syntax")
             VpnLog.w("proxy listening on 127.0.0.1:$SOCKS_PORT")
@@ -138,6 +140,26 @@ class ZapretVpnService : VpnService() {
             broadcast(false, e.message)
             shutdown()
         }
+    }
+
+    private fun startNativeLogReader() {
+        Thread({
+            try {
+                val p = ProcessBuilder("logcat", "-T", "1", "-v", "raw", "-s", "proxy:D").redirectErrorStream(true).start()
+                var windowStart = System.currentTimeMillis(); var n = 0; var dropped = 0
+                p.inputStream.bufferedReader().forEachLine { line ->
+                    if (line.startsWith("accept") || line.startsWith("send:") || line.startsWith("udp addr") || line.contains("TFO"))
+                        return@forEachLine
+                    val now = System.currentTimeMillis()
+                    if (now - windowStart > 1000) {
+                        if (dropped > 0) VpnLog.w("(byedpi: $dropped lines skipped)")
+                        windowStart = now; n = 0; dropped = 0
+                    }
+                    if (++n > 30) { dropped++; return@forEachLine }
+                    VpnLog.w("byedpi: $line")
+                }
+            } catch (e: Exception) { VpnLog.w("native log reader failed: ${e.message}") }
+        }, "nativelog").start()
     }
 
     private fun waitForPort(port: Int): Boolean {

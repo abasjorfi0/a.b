@@ -18,6 +18,7 @@ object VpnLog {
     @Synchronized
     fun w(msg: String) {
         Log.i("zapret", msg)
+        runCatching { file?.let { if (it.length() > 1_500_000) it.writeText("") } }
         runCatching { file?.appendText("${fmt.format(Date())} $msg\n") }
     }
 

@@ -95,8 +95,9 @@ object Presets {
         Strategy(
             "builtin-v6", "V6 (mobile port)",
             """
-            # Wait 4s for the first server reply; on timeout/reset/TLS error the next matching group is used
-            -T 4
+            # Wait 4s for the first server reply; the timeout is lifted once 2000 bytes arrived, so it only guards the
+            # handshake and never cuts large downloads/videos. On timeout/reset/TLS error the next matching group is used.
+            -T 4:2000
             # Group 0 - excluded domains (same as list-nodesync.txt): no desync. Also carries the QUIC fake (-a1),
             # because UDP always uses the first group.
             --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net" -a1
