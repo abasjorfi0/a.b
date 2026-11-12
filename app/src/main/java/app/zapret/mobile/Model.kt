@@ -103,8 +103,8 @@ object Presets {
         --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -a1
         # Group 1 - YouTube / Google video: disoob/split + fake(md5sig). Confirmed working for YouTube video.
         --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
-        # Group 2 - X media CDN (images, video, GIF): long split chain + TLS record + fake SNI + fake(md5sig)
-        --auto=none --hosts ":twimg.com" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -n www.google.com -Qr -f-1 -S -a1
+        # Group 2 - X / Twitter (pages, images, video, GIF): the chain that made x.com browse before (split chain + TLS record + md5sig fake)
+        --auto=none --hosts ":x.com twitter.com twimg.com t.co" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -S -a1
         # Group 3 - everything else (x.com, t.co, ...): the proven strategy (disorder + TLS record split)
         --auto=none --disorder 1 --tlsrec 1+s -a1
         # Groups 4+ - failover (timeout / reset / TLS error): each tried in turn, any host
