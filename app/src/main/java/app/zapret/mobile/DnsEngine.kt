@@ -46,7 +46,8 @@ class DnsEngine(
         private const val PENALTY_MS = 1500L
         private const val TTL_OK = 10 * 60_000L
         private const val TTL_WEAK = 2 * 60_000L
-        private const val BUDGET_MS = 3500L
+        private const val BUDGET_MS = 2500L
+        private const val HARD_MS = 4200L
         private const val BAN_MS = 10 * 60_000L
         private val PORTS = intArrayOf(443, 80, 8443)
         // /24 client-subnet hints (US, FR, TR, AE, DE, DE): CDNs answer with edges near the hinted client.
@@ -221,12 +222,14 @@ class DnsEngine(
         var weak: Cand? = null
         for ((i, wave) in waves.withIndex()) {
             if (wave.isEmpty()) continue
-            if (i > 0 && weak != null && System.currentTimeMillis() - t0 > BUDGET_MS) break
+            val spent = System.currentTimeMillis() - t0
+            if (i > 0 && (spent > HARD_MS || (weak != null && spent > BUDGET_MS))) break
             if (i == waves.size - 1) pool.execute { probeAll() }
             val ecs = ExecutorCompletionService<Cand?>(pool)
             wave.forEach { ecs.submit(it) }
             repeat(wave.size) {
-                val c = try { ecs.take().get() } catch (_: Exception) { null }
+                val left = HARD_MS + 500 - (System.currentTimeMillis() - t0)
+                val c = try { ecs.poll(maxOf(left, 1L), TimeUnit.MILLISECONDS)?.get() } catch (_: Exception) { null }
                 if (c == null) return@repeat
                 if (c.quality >= 2) {
                     if (c.r !== isp) { preferred[name] = c.r.url; penalty[c.r.url] = 0; latency[c.r.url] = c.ms; rerank() }

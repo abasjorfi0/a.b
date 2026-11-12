@@ -98,25 +98,25 @@ object Presets {
         # handshake and never cuts large downloads/videos.
         -T 4:2000
         # Group 0 - no desync (excluded domains + Instagram/Meta, which work without any bypass from the user's ISP;
-        # if they stop working the failover groups below escalate). Also carries the QUIC fake (-a6): UDP always
+        # if they stop working the failover groups below escalate). Also carries the QUIC fake (-a1): UDP always
         # uses the first group.
-        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -a6
+        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -a1
         # Group 1 - YouTube / Google video: disoob/split + fake(md5sig). Confirmed working for YouTube video.
-        --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a6
+        --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
         # Group 2 - X media CDN (images, video, GIF): long split chain + TLS record + fake SNI + fake(md5sig)
-        --auto=none --hosts ":twimg.com" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -n www.google.com -Qr -f-1 -S -a6
+        --auto=none --hosts ":twimg.com" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -n www.google.com -Qr -f-1 -S -a1
         # Group 3 - everything else (x.com, t.co, ...): the proven strategy (disorder + TLS record split)
-        --auto=none --disorder 1 --tlsrec 1+s -a6
+        --auto=none --disorder 1 --tlsrec 1+s -a1
         # Groups 4+ - failover (timeout / reset / TLS error): each tried in turn, any host
-        -At,r,s -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a6
-        -At,r,s -q1+s -s29+s -o5+s -f-1 -S -a6
-        -At,r,s -n www.google.com -Qr -f1 -d1:11+sm -s1:11+sm -S -a6
-        -At,r,s -f-1 -t8 -n www.google.com -s1+s -a6
-        -At,r,s -n www.google.com -Qr -d1 -f-1 -a6
-        -At,r,s -o1 -d1 -r1+s -S -s1+s -d3+s -a6
-        -At,r,s -f-1 -Qr -s1+sm -d3+s -s5+sm -o2 -a6
-        -At,r,s -d1 -s1+s -r1+s -f-1 -t8 -a6
-        -At,r,s -q2 -s2 -s3+s -r3 -s4 -r4 -s5+s -r5+s -s6 -s7+s -r8 -s9+s -Qr -Mh,d,r -a6
+        -At,r,s -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1
+        -At,r,s -q1+s -s29+s -o5+s -f-1 -S -a1
+        -At,r,s -n www.google.com -Qr -f1 -d1:11+sm -s1:11+sm -S -a1
+        -At,r,s -f-1 -t8 -n www.google.com -s1+s -a1
+        -At,r,s -n www.google.com -Qr -d1 -f-1 -a1
+        -At,r,s -o1 -d1 -r1+s -S -s1+s -d3+s -a1
+        -At,r,s -f-1 -Qr -s1+sm -d3+s -s5+sm -o2 -a1
+        -At,r,s -d1 -s1+s -r1+s -f-1 -t8 -a1
+        -At,r,s -q2 -s2 -s3+s -r3 -s4 -r4 -s5+s -r5+s -s6 -s7+s -r8 -s9+s -Qr -Mh,d,r -a1
     """.trimIndent()
 
     val all = listOf(
