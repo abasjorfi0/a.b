@@ -5,8 +5,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.ByteArrayOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -19,14 +21,16 @@ import java.util.concurrent.TimeUnit
 /**
  * Local DNS engine on 127.0.0.1:PORT. byedpi's resolver (zp_resolver.c) sends it wire-format queries.
  *
- * Modes: SYSTEM = plain UDP DNS, DOH = one chosen DoH endpoint, AUTO = "smart" selection:
- *  - resolvers are ranked by measured latency and the best two are raced for every query;
- *  - an answer only counts as good if its addresses are real (no 0.0.0.0 / private block-page IPs) AND at least
- *    one of them accepts a TCP connection on :443 - a resolver that answers fast but returns an unreachable or
- *    geo-blocked CDN address is skipped, the next resolver is asked, like dnscrypt-proxy switching servers
- *    in SimpleDnsCrypt's query log until the site works;
- *  - the answer handed to byedpi contains only the reachable addresses;
- *  - the resolver that worked is remembered per domain, failures are penalised, rankings refresh in the background.
+ * Modes: SYSTEM = plain UDP DNS, DOH = one chosen DoH endpoint, AUTO = "smart" selection whose goal is an
+ * address that actually works (the usual failure is a CDN edge address that is blackholed from Iran):
+ *  - candidates: the best DoH resolvers (latency-ranked, raced), the phone's own ISP resolver, then the same
+ *    name asked with EDNS client-subnet hints from other countries (different CDN edges), then random resolvers;
+ *  - an answer is good only if its IPv4 addresses are real (no 0.0.0.0 / private block-page IPs / banned IPs)
+ *    AND one of them accepts a TCP connection on 443, 80 or 8443 (checked in parallel);
+ *  - the answer handed to byedpi contains only reachable addresses;
+ *  - feedback: when byedpi reports "unreach ip" (every strategy group failed for that address) the address is
+ *    banned for 10 minutes and removed from the cache, so the next attempt resolves to a different edge;
+ *  - what worked is remembered per domain; failures are penalised; rankings refresh in the background.
  *
  * DoH requests go out directly (this :vpn process is excluded from the VPN). They must NOT go through the
  * local byedpi proxy: byedpi resolves names synchronously through this engine, so a request that waits for
@@ -41,7 +45,14 @@ class DnsEngine(
         private val DNS_MSG = "application/dns-message".toMediaType()
         private const val PENALTY_MS = 1500L
         private const val TTL_OK = 10 * 60_000L
-        private const val TTL_WEAK = 30_000L
+        private const val TTL_WEAK = 2 * 60_000L
+        private const val BUDGET_MS = 3500L
+        private const val BAN_MS = 10 * 60_000L
+        private val PORTS = intArrayOf(443, 80, 8443)
+        // /24 client-subnet hints (US, FR, TR, AE, DE, DE): CDNs answer with edges near the hinted client.
+        private val ECS = listOf(intArrayOf(8, 8, 8), intArrayOf(2, 2, 2), intArrayOf(85, 105, 0),
+            intArrayOf(94, 200, 200), intArrayOf(5, 1, 66), intArrayOf(80, 187, 0))
+        private const val GOOGLE = "https://dns.google/dns-query"
     }
 
     private val resolvers: List<DohResolver> =
@@ -50,6 +61,7 @@ class DnsEngine(
     private val ipsByHost: Map<String, List<String>> =
         resolvers.groupBy { it.url.substringAfter("//").substringBefore("/").substringBefore(":") }
             .mapValues { e -> e.value.flatMap { it.ips }.distinct() }
+    private val isp = DohResolver("ISP-DNS", "isp://system", emptyList())
 
     private val bootstrap = object : Dns {
         override fun lookup(hostname: String): List<InetAddress> {
@@ -69,6 +81,9 @@ class DnsEngine(
     private val latency = ConcurrentHashMap<String, Long>()
     private val penalty = ConcurrentHashMap<String, Int>()
     private val preferred = ConcurrentHashMap<String, String>()
+    private val ecsFor = ConcurrentHashMap<String, Int>()          // domain -> ECS hint index that gave a working edge
+    private val banned = ConcurrentHashMap<String, Long>()         // ip -> ban expiry
+    private val reach = ConcurrentHashMap<String, Pair<Boolean, Long>>()
     @Volatile private var ranked: List<DohResolver> = Resolvers.builtin.mapNotNull { byUrl[it.url] }
 
     private fun score(r: DohResolver): Long {
@@ -82,6 +97,21 @@ class DnsEngine(
         val fav = Resolvers.builtin.mapNotNull { byUrl[it.url] }
         val rest = resolvers.filter { r -> fav.none { it.url == r.url } && r.ips.isNotEmpty() }.shuffled().take(10)
         return (fav + rest).distinctBy { it.url }
+    }
+
+    // ---- feedback from byedpi ------------------------------------------------------------------
+    /** byedpi gave up on [ip] (all strategy groups failed): avoid it and forget cached answers that contain it. */
+    fun ban(ip: String) {
+        banned[ip] = System.currentTimeMillis() + BAN_MS
+        reach.remove(ip)
+        cache.entries.removeIf { e -> parseA(e.value.data).contains(ip) }
+        VpnLog.w("DNS: banned $ip for 10 min (every strategy failed on it); next lookups pick another address")
+    }
+
+    private fun isBanned(ip: String): Boolean {
+        val t = banned[ip] ?: return false
+        if (t < System.currentTimeMillis()) { banned.remove(ip); return false }
+        return true
     }
 
     // ---- lifecycle -----------------------------------------------------------------------------
@@ -137,51 +167,76 @@ class DnsEngine(
         DnsMode.AUTO -> autoResolve(q, name.lowercase())
     }
 
-    private class Cand(val r: DohResolver, val answer: ByteArray, val quality: Int, val ms: Long, val ips: List<String>)
+    private class Cand(val r: DohResolver, val answer: ByteArray, val quality: Int, val ms: Long, val ips: List<String>, val ecs: Int = -1)
 
     /**
      * quality 3 = NXDOMAIN / empty answer (trusted as is), 2 = has a reachable address (answer rewritten to
-     * reachable ones only), 1 = real addresses but none reachable, 0 = bogus (0.0.0.0, private...) or unparsable.
+     * reachable ones only), 1 = real addresses but none reachable, 0 = bogus (0.0.0.0, private, banned...).
      */
-    private fun fetchValidated(r: DohResolver, q: ByteArray): Cand? {
-        val t0 = System.nanoTime()
-        val a = doh(r, q) ?: return null
-        val ms = (System.nanoTime() - t0) / 1_000_000
-        if (a.size < 12) return Cand(r, a, 0, ms, emptyList())
+    private fun assess(r: DohResolver, q: ByteArray, a: ByteArray, ips: List<String>, ms: Long, ecs: Int): Cand {
+        if (a.size < 12) return Cand(r, a, 0, ms, emptyList(), ecs)
         val rcode = a[3].toInt() and 0x0F
-        val ips = parseA(a)
-        if (ips.isEmpty()) return if (rcode == 0 || rcode == 3) Cand(r, a, 3, ms, ips) else Cand(r, a, 0, ms, ips)
-        val good = ips.filterNot { isBogon(it) }
-        if (good.isEmpty()) return Cand(r, a, 0, ms, ips)
-        val ok = good.filter { reachable(it) }.take(3)
-        return if (ok.isNotEmpty()) Cand(r, buildAnswer(q, ok), 2, ms, ok) else Cand(r, a, 1, ms, good)
+        if (ips.isEmpty()) return if (rcode == 0 || rcode == 3) Cand(r, a, 3, ms, ips, ecs) else Cand(r, a, 0, ms, ips, ecs)
+        val good = ips.filterNot { isBogon(it) || isBanned(it) }
+        if (good.isEmpty()) return Cand(r, a, 0, ms, ips, ecs)
+        val ok = reachableSubset(good.take(4)).take(3)
+        return if (ok.isNotEmpty()) Cand(r, buildAnswer(q, ok), 2, ms, ok, ecs) else Cand(r, a, 1, ms, good, ecs)
+    }
+
+    private fun fetchValidated(r: DohResolver, q: ByteArray, ecs: Int = -1): Cand? {
+        val t0 = System.nanoTime()
+        val query = if (ecs >= 0) withEcs(q, ecs) else q
+        val a = doh(r, query) ?: return null
+        return assess(r, q, a, parseA(a), (System.nanoTime() - t0) / 1_000_000, ecs)
+    }
+
+    /** The phone's own (ISP) resolver, used from this VPN-excluded process; poisoned answers are filtered as bogons. */
+    private fun fetchSystem(q: ByteArray, name: String): Cand? {
+        val t0 = System.nanoTime()
+        val ips = try {
+            InetAddress.getAllByName(name).filterIsInstance<Inet4Address>().mapNotNull { it.hostAddress }
+        } catch (_: Exception) { return null }
+        if (ips.isEmpty()) return null
+        return assess(isp, q, buildAnswer(q, ips), ips, (System.nanoTime() - t0) / 1_000_000, -1)
     }
 
     private fun autoResolve(q: ByteArray, name: String): Res? {
+        val t0 = System.currentTimeMillis()
         val order = ArrayList<DohResolver>()
         preferred[name]?.let { u -> byUrl[u]?.let { order += it } }
         ranked.forEach { if (it !in order) order += it }
         if (order.isEmpty()) order += Resolvers.builtin.mapNotNull { byUrl[it.url] }
-        val waves = listOf(order.take(2), order.drop(2).take(3), candidates().filter { it !in order.take(5) }.take(4))
+        val google = byUrl[GOOGLE]
+
+        val waves = ArrayList<List<Callable<Cand?>>>()
+        val w1 = ArrayList<Callable<Cand?>>()
+        ecsFor[name]?.let { idx -> google?.let { g -> w1 += Callable { fetchValidated(g, q, idx) } } }
+        order.take(2).forEach { r -> w1 += Callable { fetchValidated(r, q) } }
+        w1 += Callable { fetchSystem(q, name) }
+        waves += w1
+        waves += order.drop(2).take(3).map { r -> Callable<Cand?> { fetchValidated(r, q) } }
+        if (google != null) waves += ECS.indices.shuffled().take(4).map { i -> Callable<Cand?> { fetchValidated(google, q, i) } }
+        waves += candidates().filter { it !in order.take(5) }.take(4).map { r -> Callable<Cand?> { fetchValidated(r, q) } }
+
         var weak: Cand? = null
         for ((i, wave) in waves.withIndex()) {
             if (wave.isEmpty()) continue
-            if (i == 2) pool.execute { probeAll() }
+            if (i > 0 && weak != null && System.currentTimeMillis() - t0 > BUDGET_MS) break
+            if (i == waves.size - 1) pool.execute { probeAll() }
             val ecs = ExecutorCompletionService<Cand?>(pool)
-            wave.forEach { r -> ecs.submit(Callable { fetchValidated(r, q) }) }
+            wave.forEach { ecs.submit(it) }
             repeat(wave.size) {
                 val c = try { ecs.take().get() } catch (_: Exception) { null }
                 if (c == null) return@repeat
                 if (c.quality >= 2) {
-                    preferred[name] = c.r.url; penalty[c.r.url] = 0; latency[c.r.url] = c.ms; rerank()
-                    VpnLog.w("DNS $name -> ${c.ips.firstOrNull() ?: "(none)"} via ${c.r.name} ${c.ms}ms ${if (c.quality == 2) "reachable" else "empty"}")
+                    if (c.r !== isp) { preferred[name] = c.r.url; penalty[c.r.url] = 0; latency[c.r.url] = c.ms; rerank() }
+                    if (c.ecs >= 0) ecsFor[name] = c.ecs
+                    VpnLog.w("DNS $name -> ${c.ips.firstOrNull() ?: "(none)"} via ${c.r.name}${if (c.ecs >= 0) " (ecs#${c.ecs})" else ""} ${c.ms}ms ${if (c.quality == 2) "reachable" else "empty"}")
                     return Res(c.answer, TTL_OK)
                 }
-                // slow/unreachable/bogus answer: penalise only the resolver that returned nothing usable at all
-                if (c.quality == 0) penalty.merge(c.r.url, 1) { x, y -> minOf(x + y, 6) }
+                if (c.quality == 0 && c.r !== isp) penalty.merge(c.r.url, 1) { x, y -> minOf(x + y, 6) }
                 if (c.quality == 1 && weak == null) weak = c
             }
-            weak?.let { w -> if (i >= 1) return finishWeak(name, w) }
             rerank()
         }
         weak?.let { return finishWeak(name, it) }
@@ -190,7 +245,7 @@ class DnsEngine(
     }
 
     private fun finishWeak(name: String, w: Cand): Res {
-        VpnLog.w("DNS $name -> ${w.ips.firstOrNull()} via ${w.r.name} (NOT reachable on :443 from any resolver tried)")
+        VpnLog.w("DNS $name -> ${w.ips.firstOrNull()} via ${w.r.name} (NOT reachable on 443/80/8443 from any resolver or hint tried)")
         return Res(w.answer, TTL_WEAK)
     }
 
@@ -232,10 +287,28 @@ class DnsEngine(
         VpnLog.w("DoH ranking: " + ranked.take(5).joinToString { "${it.name}=${latency[it.url]?.let { l -> if (l == Long.MAX_VALUE) "fail" else "${l}ms" }}" })
     }
 
-    // ---- DNS wire helpers ----------------------------------------------------------------------
-    private fun reachable(ip: String, port: Int = 443, timeoutMs: Int = 1500): Boolean = try {
-        Socket().use { it.connect(InetSocketAddress(ip, port), timeoutMs); true }
+    // ---- reachability --------------------------------------------------------------------------
+    private fun connectOk(ip: String, port: Int): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress(ip, port), 1200); true }
     } catch (_: Exception) { false }
+
+    /** True if any of the ports accepts a TCP connection (all ports tried in parallel); results are cached. */
+    private fun reachable(ip: String): Boolean {
+        val now = System.currentTimeMillis()
+        reach[ip]?.let { (ok, exp) -> if (exp > now) return ok }
+        val ecs = ExecutorCompletionService<Boolean>(pool)
+        PORTS.forEach { p -> ecs.submit(Callable { connectOk(ip, p) }) }
+        var ok = false
+        repeat(PORTS.size) { if (!ok && runCatching { ecs.take().get() }.getOrDefault(false)) ok = true }
+        reach[ip] = ok to (now + if (ok) TTL_OK else 60_000L)
+        return ok
+    }
+
+    /** The reachable subset of [ips], checked in parallel, original order kept. */
+    private fun reachableSubset(ips: List<String>): List<String> {
+        val futures = ips.map { ip -> ip to pool.submit(Callable { reachable(ip) }) }
+        return futures.filter { (_, f) -> runCatching { f.get() }.getOrDefault(false) }.map { it.first }
+    }
 
     private fun isBogon(ip: String): Boolean {
         val p = ip.split(".").mapNotNull { it.toIntOrNull() }
@@ -245,6 +318,7 @@ class DnsEngine(
             (p[0] == 100 && p[1] in 64..127)
     }
 
+    // ---- DNS wire helpers ----------------------------------------------------------------------
     private fun skipName(b: ByteArray, start: Int): Int {
         var o = start
         while (o < b.size) {
@@ -279,13 +353,23 @@ class DnsEngine(
     private fun buildAnswer(q: ByteArray, ips: List<String>): ByteArray {
         var qEnd = skipName(q, 12)
         qEnd = if (qEnd < 0) q.size else minOf(qEnd + 4, q.size)
-        val out = java.io.ByteArrayOutputStream()
+        val out = ByteArrayOutputStream()
         out.write(byteArrayOf(q[0], q[1], 0x81.toByte(), 0x80.toByte(), 0, 1, 0, ips.size.toByte(), 0, 0, 0, 0))
         out.write(q, 12, qEnd - 12)
         for (ip in ips) {
             out.write(byteArrayOf(0xC0.toByte(), 0x0C, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4))
             ip.split(".").forEach { out.write(it.toInt()) }
         }
+        return out.toByteArray()
+    }
+
+    /** [q] plus an EDNS0 client-subnet option (/24) so CDN-aware resolvers answer with edges near that subnet. */
+    private fun withEcs(q: ByteArray, idx: Int): ByteArray {
+        val s = ECS[idx]
+        val b = q.copyOf(); b[10] = 0; b[11] = 1
+        val out = ByteArrayOutputStream()
+        out.write(b)
+        out.write(byteArrayOf(0, 0, 41, 0x10, 0, 0, 0, 0, 0, 0, 11, 0, 8, 0, 7, 0, 1, 24, 0, s[0].toByte(), s[1].toByte(), s[2].toByte()))
         return out.toByteArray()
     }
 

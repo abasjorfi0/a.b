@@ -150,6 +150,9 @@ class ZapretVpnService : VpnService() {
                 p.inputStream.bufferedReader().forEachLine { line ->
                     if (line.startsWith("accept") || line.startsWith("send:") || line.startsWith("udp addr") || line.contains("TFO"))
                         return@forEachLine
+                    if (line.startsWith("unreach ip")) {
+                        Regex("""\d{1,3}(\.\d{1,3}){3}""").find(line)?.value?.let { dns?.ban(it) }
+                    }
                     val now = System.currentTimeMillis()
                     if (now - windowStart > 1000) {
                         if (dropped > 0) VpnLog.w("(byedpi: $dropped lines skipped)")
