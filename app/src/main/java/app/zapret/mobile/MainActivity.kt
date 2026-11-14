@@ -235,10 +235,30 @@ class MainActivity : ComponentActivity() {
     // ---------------------------------------------------------------- DNS
     @Composable
     private fun DnsTab(s: Settings, update: (Settings) -> Unit) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(DnsMode.AUTO to "Auto (fastest working DoH)", DnsMode.DOH to "DoH (choose resolver)", DnsMode.SYSTEM to "Plain DNS").forEach { (m, label) ->
                 Row(Modifier.fillMaxWidth().clickable { update(s.copy(dnsMode = m)) }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = s.dnsMode == m, onClick = { update(s.copy(dnsMode = m)) }); Text(label)
+                }
+            }
+            if (s.dnsMode == DnsMode.AUTO) {
+                var out by remember { mutableStateOf("") }
+                var busy by remember { mutableStateOf(false) }
+                Button(enabled = !busy, onClick = {
+                    busy = true; out = "Testing (about 30-60 s)..."
+                    Thread {
+                        val eng = DnsEngine(DnsMode.AUTO, s.dohUrl, s.plainDns, Resolvers.all(this@MainActivity))
+                        val r = runCatching { eng.selfTest(listOf("pbs.twimg.com", "video.twimg.com", "x.com", "www.instagram.com", "scontent.cdninstagram.com", "rr1---sn-4g5e6nzl.googlevideo.com")) }
+                            .getOrElse { "failed: ${it.message}" }
+                        runOnUiThread { out = r; busy = false }
+                    }.start()
+                }) { Text(if (busy) "Testing..." else "Test DNS now (shows which resolver gives a working IP)") }
+                if (out.isNotEmpty()) {
+                    SelectionContainer { Text(out, style = MaterialTheme.typography.bodySmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) }
+                    OutlinedButton(onClick = {
+                        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("dns-test", out))
+                        Toast.makeText(this@MainActivity, "Copied", Toast.LENGTH_SHORT).show()
+                    }) { Text("Copy result") }
                 }
             }
             if (s.dnsMode == DnsMode.DOH) {

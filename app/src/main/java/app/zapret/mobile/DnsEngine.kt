@@ -115,6 +115,38 @@ class DnsEngine(
         return true
     }
 
+    // ---- self-test (DNS tab button; works with or without the VPN running) ----------------------
+    private fun buildQuery(name: String): ByteArray {
+        val o = ByteArrayOutputStream()
+        o.write(byteArrayOf(0x4A, 0x11, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        name.split(".").forEach { o.write(it.length); o.write(it.toByteArray()) }
+        o.write(byteArrayOf(0, 0, 1, 0, 1)); return o.toByteArray()
+    }
+
+    fun selfTest(names: List<String>): String {
+        val sb = StringBuilder()
+        probeAll()
+        sb.append("Ranking: ").append(ranked.take(6).joinToString { "${it.name} ${latency[it.url]?.let { l -> if (l == Long.MAX_VALUE) "fail" else "${l}ms" }}" }).append("\n")
+        for (n in names) {
+            sb.append("\n== ").append(n).append("\n")
+            val q = buildQuery(n)
+            val jobs = (ranked.take(5).map { r -> r.name to Callable<Cand?> { fetchValidated(r, q) } } +
+                listOf("ISP-DNS" to Callable<Cand?> { fetchSystem(q, n) }) +
+                ECS.indices.take(3).map { i -> "Google ecs#$i" to Callable<Cand?> { byUrl[GOOGLE]?.let { fetchValidated(it, q, i) } } })
+                .map { (l, c) -> l to pool.submit(c) }
+            for ((l, f) in jobs) {
+                val c = runCatching { f.get(6, TimeUnit.SECONDS) }.getOrNull()
+                val st = when (c?.quality) { 2 -> "OK"; 1 -> "unreachable"; 0 -> "bogus/banned"; 3 -> "empty"; else -> "failed" }
+                sb.append(String.format("  %-18s %-12s %s\n", l, st, c?.ips?.take(3)?.joinToString(",") ?: ""))
+            }
+            val t0 = System.currentTimeMillis()
+            val r = autoResolve(q, n)
+            sb.append("  => chosen: ").append(r?.let { parseA(it.data).joinToString(",") } ?: "none")
+                .append(" (").append(System.currentTimeMillis() - t0).append(" ms)\n")
+        }
+        return sb.toString()
+    }
+
     // ---- lifecycle -----------------------------------------------------------------------------
     fun start() {
         val s = DatagramSocket(null).apply { reuseAddress = true; bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT)) }
