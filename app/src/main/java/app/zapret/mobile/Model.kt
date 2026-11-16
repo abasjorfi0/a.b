@@ -91,49 +91,42 @@ data class Settings(
 }
 
 object Presets {
-    // Group order matters: byedpi uses group 0 for UDP, host groups are matched by SNI, and the failover groups
-    // (-At,r,s) are used only after a connection times out / is reset / gets a TLS error.
+    // Mobile port of the PC "all in one V6" (winws2). Group order matters: byedpi uses group 0 for UDP, host/proto
+    // groups are matched first, the default group handles the rest, and the failover groups (-At,r,s) are tried one
+    // after another only when a connection times out / is reset / gets a TLS error (= the PC's "circular" rotation).
     private val V6 = """
-        # Wait 4s for the first server reply; the timeout is lifted once 2000 bytes arrived, so it only guards the
-        # handshake and never cuts large downloads/videos.
+        # ===== V6 for mobile (byedpi) =====
+        # Wait 4s for the first server reply; lifted after 2000 bytes so big downloads/videos are never cut.
         -T 4:2000
-        # Group 0 - no desync (excluded domains + Instagram/Meta, which work without any bypass from the user's ISP;
-        # if they stop working the failover groups below escalate). Also carries the QUIC fake (-a1): UDP always
-        # uses the first group.
-        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -a1
-        # Group 1 - YouTube / Google video: disoob/split + fake(md5sig). Confirmed working for YouTube video.
+        # G0 - exclusions (PC list-nodesync.txt) + Instagram/Meta: NO desync. Also the UDP/QUIC/STUN/game fake
+        # (PC: fake x8 on QUIC, x6 on STUN/games), because UDP always uses the first group.
+        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -a8
+        # G1 - YouTube / Google video: disoob + split + fake(md5sig). Confirmed for YouTube video.
         --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
-        # Group 2 - X / Twitter (pages, images, video, GIF): the chain that made x.com browse before (split chain + TLS record + md5sig fake)
+        # G2 - X / Twitter (pages, images, video, GIF): long split chain + TLS record + md5sig fake
         --auto=none --hosts ":x.com twitter.com twimg.com t.co" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -S -a1
-        # Group 3 - everything else (x.com, t.co, ...): the proven strategy (disorder + TLS record split)
+        # G3 - plain HTTP (port 80): fake(md5sig) + split after the method (PC: fake http md5 + multisplit method+2)
+        --auto=none --proto=h -s2 -f-1 -S -a1
+        # G4 - everything else (TLS, any port): the proven mobile strategy (disorder + TLS record split)
         --auto=none --disorder 1 --tlsrec 1+s -a1
-        # Groups 4+ - failover (timeout / reset / TLS error): each tried in turn, any host
+        # ---- failover groups (PC circular strategies 1,2,3 first, then extra community ones) ----
+        # PC 1: fake md5 (random TLS, SNI www.google.com) + multidisorder at 1 and SNI middle
+        -At,r,s -n www.google.com -Qr -f-1 -S -d1 -d0+sm -a1
+        # PC 2: fake SNI fonts.google.com + multisplit at 1 and SNI middle (seqovl is root-only, so no overlap)
+        -At,r,s -n fonts.google.com -Qr -f-1 -S -s1 -s0+sm -a1
+        # PC 3: fake (low TTL) + fakedsplit in the SNI middle
+        -At,r,s -n www.google.com -Qr -f-1 -t8 -s0+sm -a1
         -At,r,s -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1
         -At,r,s -q1+s -s29+s -o5+s -f-1 -S -a1
         -At,r,s -n www.google.com -Qr -f1 -d1:11+sm -s1:11+sm -S -a1
-        -At,r,s -f-1 -t8 -n www.google.com -s1+s -a1
-        -At,r,s -n www.google.com -Qr -d1 -f-1 -a1
         -At,r,s -o1 -d1 -r1+s -S -s1+s -d3+s -a1
         -At,r,s -f-1 -Qr -s1+sm -d3+s -s5+sm -o2 -a1
         -At,r,s -d1 -s1+s -r1+s -f-1 -t8 -a1
         -At,r,s -q2 -s2 -s3+s -r3 -s4 -r4 -s5+s -r5+s -s6 -s7+s -r8 -s9+s -Qr -Mh,d,r -a1
     """.trimIndent()
 
-    val all = listOf(
-        Strategy("builtin-v6", "V6 (mobile port)", V6, true),
-        Strategy("builtin-c-chain", "Community: long split chain", "-d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -a1", true),
-        Strategy("builtin-c-fake-split", "Community: fake + split", "-f-1 -t8 -n www.google.com -s1+s -a1", true),
-        Strategy("builtin-c-oob-md5", "Community: disoob/split + fake md5", "-q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1", true),
-        Strategy("builtin-c-disorder-fake", "Community: disorder + fake + tlsrec", "-d1 -s1+s -r1+s -f-1 -t8 -a1", true),
-        Strategy("builtin-disorder-tlsrec", "Disorder + TLS record", "--disorder 1 --tlsrec 1+s", true),
-        Strategy("builtin-split-sni", "Split at SNI", "--split 1+s", true),
-        Strategy("builtin-fake-ttl", "Fake packet (low TTL)", "--fake -1 --ttl 8", true),
-        Strategy("builtin-oob", "OOB byte", "--oob 1", true),
-        Strategy(
-            "builtin-auto-fallback", "Auto fallback (experimental)",
-            "--auto=torst --disorder 1 --auto=torst --fake -1 --ttl 8 --auto=torst --split 1+s --tlsrec 1+s", true,
-        ),
-    )
+    val v6 = Strategy("builtin-v6", "V6 (mobile port of the PC strategy)", V6, true)
+    val all = listOf(v6)
 }
 
 /** Persists user strategies + settings as JSON in the app's private files dir. */
@@ -157,6 +150,7 @@ class Store(ctx: Context) {
     }
 
     fun allStrategies(): List<Strategy> = Presets.all + userStrategies()
+    fun find(id: String): Strategy = allStrategies().firstOrNull { it.id == id } ?: Presets.v6
 
     fun newId(): String = "user-" + UUID.randomUUID().toString().take(8)
 

@@ -17,8 +17,8 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@android:drawable/sym_def_app_icon"
-        android:label="Zapret Mobile"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Konata"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
@@ -30,6 +30,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".KonataTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="Konata"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!-- Runs in its own process: byedpi keeps global state, so stopping = killing this process. -->
         <service

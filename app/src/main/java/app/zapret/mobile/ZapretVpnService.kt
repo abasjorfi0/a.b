@@ -42,7 +42,7 @@ class ZapretVpnService : VpnService() {
 
     private fun startForegroundNotification() {
         val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(CHANNEL, "Zapret Mobile", NotificationManager.IMPORTANCE_LOW))
+        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(CHANNEL, "Konata", NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(
             this, 0, Intent(this, ZapretVpnService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -51,9 +51,9 @@ class ZapretVpnService : VpnService() {
             this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = (if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else Notification.Builder(this))
-            .setContentTitle("Zapret Mobile is running")
+            .setContentTitle("Konata is running")
             .setContentText("Tap to open. Runs in the background until you stop it.")
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_tile)
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Stop", stop).build())
@@ -76,7 +76,7 @@ class ZapretVpnService : VpnService() {
             VpnLog.init(filesDir, reset = true)
             val dnsMode = DnsMode.valueOf(cfg.getString("dnsMode"))
             VpnLog.w("starting; strategy: ${cfg.getString("strategy")}")
-            dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.start() }
+            dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.statusFile = File(filesDir, "dns-status.txt"); it.start() }
 
             val strategy = ArgParser.tokenize(cfg.getString("strategy"))
             // -x 1: byedpi logs its decisions (groups, failover, timeouts) to logcat; we mirror them into the app log
@@ -86,7 +86,7 @@ class ZapretVpnService : VpnService() {
             if (!waitForPort(SOCKS_PORT)) error("proxy did not start - check the strategy syntax")
             VpnLog.w("proxy listening on 127.0.0.1:$SOCKS_PORT")
 
-            val b = Builder().setSession("Zapret Mobile").setMtu(1500)
+            val b = Builder().setSession("Konata").setMtu(1500)
                 .addAddress("198.18.0.1", 32).addRoute("0.0.0.0", 0).addDnsServer("198.18.0.2")
             val apps = cfg.getJSONArray("apps").let { a -> (0 until a.length()).map { a.getString(it) } }
             if (cfg.getString("appMode") == AppMode.ONLY.name) {

@@ -6,6 +6,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
@@ -48,6 +49,7 @@ class DnsEngine(
         private const val TTL_WEAK = 2 * 60_000L
         private const val BUDGET_MS = 2500L
         private const val HARD_MS = 4200L
+        private const val STALE_MS = 60 * 60_000L
         private const val BAN_MS = 10 * 60_000L
         private val PORTS = intArrayOf(443, 80, 8443)
         // /24 client-subnet hints (US, FR, TR, AE, DE, DE): CDNs answer with edges near the hinted client.
@@ -75,6 +77,8 @@ class DnsEngine(
         .connectTimeout(3, TimeUnit.SECONDS).readTimeout(3, TimeUnit.SECONDS).callTimeout(4, TimeUnit.SECONDS)
         .build()
 
+    /** Written after every ranking change so the UI (another process) can show the live best resolver. */
+    @Volatile var statusFile: File? = null
     private val pool = Executors.newCachedThreadPool()
     @Volatile private var sock: DatagramSocket? = null
 
@@ -154,7 +158,9 @@ class DnsEngine(
         VpnLog.w("DNS engine listening on 127.0.0.1:$PORT (mode=$mode)")
         if (mode == DnsMode.AUTO) pool.execute {
             probeAll()
-            try { while (true) { Thread.sleep(5 * 60_000L); probeAll() } } catch (_: InterruptedException) {}
+            var n = 0
+            // Like SimpleDnsCrypt: keep measuring, always follow the fastest working server, re-check everything now and then.
+            try { while (true) { Thread.sleep(20_000L); if (++n % 9 == 0) probeAll() else quickProbe() } } catch (_: InterruptedException) {}
         }
         pool.execute {
             val buf = ByteArray(1500)
@@ -175,24 +181,38 @@ class DnsEngine(
 
     // ---- resolving -----------------------------------------------------------------------------
     private class Res(val data: ByteArray, val ttlMs: Long)
-    private class Cached(val data: ByteArray, val expires: Long)
+    private class Cached(val data: ByteArray, val expires: Long, val stale: Long)
     private val cache = ConcurrentHashMap<String, Cached>()
 
     private fun resolve(q: ByteArray, name: String): ByteArray? {
         if (q.size < 13) return resolveUncached(q, name)?.data
         val key = String(q, 12, q.size - 12, Charsets.ISO_8859_1)
         cache[key]?.let { c ->
-            if (c.expires > System.currentTimeMillis()) {
+            val now = System.currentTimeMillis()
+            if (c.expires > now) {
+                val a = c.data.copyOf(); a[0] = q[0]; a[1] = q[1]; return a
+            }
+            if (c.stale > now) {
+                // Stale-while-revalidate: answer instantly from the old entry and refresh in the background, so a slow or
+                // dead resolver never interrupts browsing.
+                if (refreshing.add(key)) pool.execute {
+                    try {
+                        val r2 = resolveUncached(q, name)
+                        if (r2 != null && isGood(r2.data)) cache[key] = Cached(r2.data, System.currentTimeMillis() + r2.ttlMs, System.currentTimeMillis() + STALE_MS)
+                    } finally { refreshing.remove(key) }
+                }
                 val a = c.data.copyOf(); a[0] = q[0]; a[1] = q[1]; return a
             }
             cache.remove(key)
         }
         val r = resolveUncached(q, name)
         if (r == null) { VpnLog.w("DNS $name -> FAILED"); return null }
-        val ok = r.data.size > 12 && (r.data[3].toInt() and 0x0F) == 0 && ((r.data[6].toInt() shl 8) or (r.data[7].toInt() and 0xFF)) != 0
-        if (ok) cache[key] = Cached(r.data, System.currentTimeMillis() + r.ttlMs)
+        if (isGood(r.data)) cache[key] = Cached(r.data, System.currentTimeMillis() + r.ttlMs, System.currentTimeMillis() + STALE_MS)
         return r.data
     }
+
+    private val refreshing = ConcurrentHashMap.newKeySet<String>()
+    private fun isGood(d: ByteArray) = d.size > 12 && (d[3].toInt() and 0x0F) == 0 && ((d[6].toInt() shl 8) or (d[7].toInt() and 0xFF)) != 0
 
     private fun resolveUncached(q: ByteArray, name: String): Res? = when (mode) {
         DnsMode.SYSTEM -> plain(q)?.let { Res(it, TTL_OK) }
@@ -304,9 +324,7 @@ class DnsEngine(
 
     /** Probe a sample of resolvers in parallel with a tiny A query and update the latency table. */
     private fun probeAll() {
-        val q = byteArrayOf(0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e'.code.toByte(), 'x'.code.toByte(), 'a'.code.toByte(),
-            'm'.code.toByte(), 'p'.code.toByte(), 'l'.code.toByte(), 'e'.code.toByte(), 3, 'c'.code.toByte(), 'o'.code.toByte(),
-            'm'.code.toByte(), 0, 0, 1, 0, 1)
+        val q = probeQuery
         val futures = candidates().map { r ->
             r to pool.submit(Callable {
                 val t0 = System.nanoTime()
@@ -318,8 +336,44 @@ class DnsEngine(
             latency[r.url] = t
             if (t != Long.MAX_VALUE) penalty[r.url] = 0
         }
-        rerank()
+        rerank(); publish()
         VpnLog.w("DoH ranking: " + ranked.take(5).joinToString { "${it.name}=${latency[it.url]?.let { l -> if (l == Long.MAX_VALUE) "fail" else "${l}ms" }}" })
+    }
+
+    private val probeQuery = byteArrayOf(0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e'.code.toByte(), 'x'.code.toByte(), 'a'.code.toByte(),
+        'm'.code.toByte(), 'p'.code.toByte(), 'l'.code.toByte(), 'e'.code.toByte(), 3, 'c'.code.toByte(), 'o'.code.toByte(),
+        'm'.code.toByte(), 0, 0, 1, 0, 1)
+    @Volatile private var lastBest: String? = null
+
+    /** Cheap health check of the current top resolvers; failures drop a server immediately so the next one takes over. */
+    private fun quickProbe() {
+        val set = LinkedHashSet<DohResolver>()
+        ranked.take(4).forEach { set += it }
+        preferred.values.toSet().take(3).forEach { u -> byUrl[u]?.let { set += it } }
+        val futures = set.map { r -> r to pool.submit(Callable {
+            val t0 = System.nanoTime()
+            if (doh(r, probeQuery) != null) (System.nanoTime() - t0) / 1_000_000 else Long.MAX_VALUE
+        }) }
+        futures.forEach { (r, f) ->
+            val t = runCatching { f.get() }.getOrDefault(Long.MAX_VALUE)
+            val old = latency[r.url]
+            if (t == Long.MAX_VALUE) { penalty.merge(r.url, 1) { x, y -> minOf(x + y, 6) }; latency[r.url] = Long.MAX_VALUE }
+            else { latency[r.url] = if (old == null || old == Long.MAX_VALUE) t else (old * 2 + t) / 3; penalty[r.url] = 0 }
+        }
+        rerank(); publish()
+    }
+
+    private fun publish() {
+        val top = ranked.take(6)
+        val best = top.firstOrNull { (latency[it.url] ?: Long.MAX_VALUE) != Long.MAX_VALUE }
+        if (best != null && best.name != lastBest) {
+            VpnLog.w("DNS best server: ${best.name} (${latency[best.url]} ms)" + (lastBest?.let { " - switched from $it" } ?: ""))
+            lastBest = best.name
+        }
+        val txt = StringBuilder()
+        txt.append(best?.let { "${it.name}|${latency[it.url]}" } ?: "none|0").append('\n')
+        top.forEach { r -> txt.append(r.name).append('|').append(latency[r.url]?.let { if (it == Long.MAX_VALUE) -1 else it } ?: -1).append('\n') }
+        runCatching { statusFile?.writeText(txt.toString()) }
     }
 
     // ---- reachability --------------------------------------------------------------------------

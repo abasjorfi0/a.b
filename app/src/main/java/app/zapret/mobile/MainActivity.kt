@@ -1,7 +1,6 @@
 package app.zapret.mobile
 
 import android.Manifest
-import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -11,7 +10,6 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
-import androidx.core.content.ContextCompat
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -19,19 +17,38 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.io.File
+
+private val Blue = Color(0xFF3F6FD8)
+private val Green = Color(0xFF2FA36B)
+private val Cream = Color(0xFFFFF6EC)
 
 class MainActivity : ComponentActivity() {
     private var running by mutableStateOf(false)
@@ -54,8 +71,21 @@ class MainActivity : ComponentActivity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         setContent {
-            MaterialTheme(colorScheme = if (androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { App(store) }
+            val dark = isSystemInDarkTheme()
+            val scheme = if (dark) darkColorScheme(
+                primary = Color(0xFF8FB0FF), onPrimary = Color(0xFF0B1636), secondary = Color(0xFF5FD8A0),
+                background = Color(0xFF0E1430), surface = Color(0xFF1A2347), surfaceVariant = Color(0xFF243060),
+                onBackground = Color(0xFFEAF0FF), onSurface = Color(0xFFEAF0FF), onSurfaceVariant = Color(0xFFB8C6F0),
+                primaryContainer = Color(0xFF2B3C7A), onPrimaryContainer = Color(0xFFDCE6FF),
+            ) else lightColorScheme(
+                primary = Blue, onPrimary = Color.White, secondary = Green,
+                background = Cream, surface = Color.White, surfaceVariant = Color(0xFFE6EEFF),
+                onBackground = Color(0xFF14204A), onSurface = Color(0xFF14204A), onSurfaceVariant = Color(0xFF4A5A8A),
+                primaryContainer = Color(0xFFDCE6FF), onPrimaryContainer = Color(0xFF0E1E55),
+            )
+            MaterialTheme(colorScheme = scheme) {
+                val bg = if (dark) listOf(Color(0xFF0E1430), Color(0xFF16204A)) else listOf(Color(0xFFD9E7FF), Cream)
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(bg))) { App(store) }
             }
         }
     }
@@ -63,9 +93,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // The VPN lives in its own process and keeps running when this screen is closed: re-detect it.
-        val alive = (getSystemService(ACTIVITY_SERVICE) as ActivityManager).runningAppProcesses
-            ?.any { it.processName == "$packageName:vpn" } == true
-        running = alive && java.io.File(filesDir, "running").exists()
+        running = VpnControl.isRunning(this)
     }
 
     override fun onDestroy() { unregisterReceiver(stateReceiver); super.onDestroy() }
@@ -78,82 +106,128 @@ class MainActivity : ComponentActivity() {
         fun update(s: Settings) { settings = s; store.saveSettings(s) }
 
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
-            TabRow(selectedTabIndex = tab) {
-                listOf("Home", "Strategies", "DNS", "Apps").forEachIndexed { i, t ->
-                    Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Image(painterResource(R.drawable.konata), null, Modifier.size(44.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.primary, CircleShape),
+                    contentScale = ContentScale.Crop)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Konata", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text("DPI bypass + smart DNS", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                Box(Modifier.size(12.dp).clip(CircleShape).background(if (running) Green else Color(0xFF9AA3BD)))
             }
-            Box(Modifier.weight(1f).padding(16.dp)) {
+            Box(Modifier.weight(1f).padding(horizontal = 16.dp)) {
                 when (tab) {
-                    0 -> HomeTab(store, settings, strategies, ::update)
+                    0 -> HomeTab(settings, strategies)
                     1 -> StrategiesTab(store, settings, strategies, { strategies = store.allStrategies() }, ::update)
                     2 -> DnsTab(settings, ::update)
                     else -> AppsTab(settings, ::update)
                 }
+            }
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                listOf("🏠" to "Home", "🧩" to "Strategy", "🌐" to "DNS", "📱" to "Apps").forEachIndexed { i, (ic, t) ->
+                    NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Text(ic, fontSize = 20.sp) }, label = { Text(t) })
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                content()
             }
         }
     }
 
     // ---------------------------------------------------------------- Home
     @Composable
-    private fun HomeTab(store: Store, s: Settings, strategies: List<Strategy>, update: (Settings) -> Unit) {
+    private fun HomeTab(s: Settings, strategies: List<Strategy>) {
         val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-            if (r.resultCode == RESULT_OK) startVpn(store, s, strategies)
+            if (r.resultCode == RESULT_OK) VpnControl.start(this)
         }
         val chosen = strategies.firstOrNull { it.id == s.strategyId } ?: strategies.first()
+        var best by remember { mutableStateOf("") }
+        LaunchedEffect(running) {
+            while (true) {
+                best = runCatching { File(filesDir, "dns-status.txt").readLines().firstOrNull().orEmpty() }.getOrDefault("")
+                kotlinx.coroutines.delay(2000)
+            }
+        }
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(if (running) "Running" else "Stopped", style = MaterialTheme.typography.headlineMedium)
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Button(onClick = {
-                if (running) startService(Intent(this@MainActivity, ZapretVpnService::class.java).setAction(ZapretVpnService.ACTION_STOP))
-                else {
-                    ArgParser.validate(chosen.args)?.let { error = it; return@Button }
-                    error = null
-                    val p = VpnService.prepare(this@MainActivity)
-                    if (p != null) launcher.launch(p) else startVpn(store, s, strategies)
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = if (running) Green.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface)) {
+                Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Image(painterResource(R.drawable.konata), null,
+                        Modifier.size(130.dp).clip(CircleShape).border(4.dp, if (running) Green else MaterialTheme.colorScheme.primary, CircleShape),
+                        contentScale = ContentScale.Crop)
+                    Text(if (running) "Protected" else "Stopped", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Button(
+                        onClick = {
+                            if (running) VpnControl.stop(this@MainActivity)
+                            else {
+                                ArgParser.validate(chosen.args)?.let { error = it; return@Button }
+                                error = null
+                                val p = VpnService.prepare(this@MainActivity)
+                                if (p != null) launcher.launch(p) else VpnControl.start(this@MainActivity)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(28.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (running) Color(0xFFD9534F) else MaterialTheme.colorScheme.primary),
+                    ) { Text(if (running) "Stop" else "Start", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text(if (running) "Stop" else "Start") }
-            Text("Strategy: ${chosen.name}")
-            Text("DNS: ${s.dnsMode}   •   Apps: ${s.appMode.name.lowercase()} (${s.apps.size})")
-            OutlinedButton(onClick = {
-                runCatching {
-                    startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            }
+            Section("Now") {
+                Text("Strategy: ${chosen.name}")
+                val dnsLine = when (s.dnsMode) {
+                    DnsMode.AUTO -> "DNS: Auto" + best.takeIf { running && it.isNotBlank() && !it.startsWith("none") }?.let { "  •  best: " + it.replace("|", " (") + " ms)" }.orEmpty()
+                    DnsMode.DOH -> "DNS: DoH"
+                    DnsMode.SYSTEM -> "DNS: Plain (${s.plainDns})"
                 }
-            }, modifier = Modifier.fillMaxWidth()) { Text("Allow running in the background (battery)") }
+                Text(dnsLine)
+                Text("Apps: ${if (s.appMode == AppMode.ONLY) "only" else "all except"} ${s.apps.size} selected")
+            }
+            Section("Tips") {
+                Text("Quick button: swipe down the notification panel, tap the pencil (edit) and drag the Konata tile next to Wi-Fi and Bluetooth.",
+                    style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = {
+                    runCatching {
+                        startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                    }
+                }, modifier = Modifier.fillMaxWidth()) { Text("Allow running in the background (battery)") }
+            }
             var log by remember { mutableStateOf("") }
+            var open by remember { mutableStateOf(false) }
             val logScroll = rememberScrollState()
-            LaunchedEffect(Unit) {
-                while (true) { log = VpnLog.read(filesDir, 400); kotlinx.coroutines.delay(1500) }
+            LaunchedEffect(open) {
+                while (open) { log = VpnLog.read(filesDir, 400); kotlinx.coroutines.delay(1500) }
             }
             LaunchedEffect(log) {
-                // follow the end of the log unless the user scrolled up to read
                 if (logScroll.maxValue - logScroll.value < 150) logScroll.scrollTo(logScroll.maxValue)
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Diagnostics", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = {
-                    (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("zapret log", log))
-                    Toast.makeText(this@MainActivity, "Log copied", Toast.LENGTH_SHORT).show()
-                }) { Text("Copy all") }
-                TextButton(onClick = { runCatching { java.io.File(filesDir, "vpn.log").writeText("") }; log = "" }) { Text("Clear") }
-            }
-            Card(Modifier.fillMaxWidth().height(320.dp)) {
-                SelectionContainer {
-                    Text(log.ifBlank { "(no log yet)" }, Modifier.fillMaxWidth().verticalScroll(logScroll).padding(8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            Section("Diagnostics") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { open = !open }) { Text(if (open) "Hide log" else "Show log") }
+                    OutlinedButton(onClick = {
+                        val t = VpnLog.read(filesDir, 400)
+                        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("konata log", t))
+                        Toast.makeText(this@MainActivity, "Log copied", Toast.LENGTH_SHORT).show()
+                    }) { Text("Copy all") }
+                    OutlinedButton(onClick = { runCatching { File(filesDir, "vpn.log").writeText("") }; log = "" }) { Text("Clear") }
+                }
+                if (open) Card(Modifier.fillMaxWidth().height(320.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    SelectionContainer {
+                        Text(log.ifBlank { "(no log yet)" }, Modifier.fillMaxWidth().verticalScroll(logScroll).padding(8.dp),
+                            style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    }
                 }
             }
+            Spacer(Modifier.height(8.dp))
         }
-    }
-
-    private fun startVpn(store: Store, s: Settings, strategies: List<Strategy>) {
-        val chosen = strategies.firstOrNull { it.id == s.strategyId } ?: strategies.first()
-        ContextCompat.startForegroundService(
-            this,
-            Intent(this, ZapretVpnService::class.java).setAction(ZapretVpnService.ACTION_START)
-                .putExtra(ZapretVpnService.EXTRA_CONFIG, s.toJson(chosen.args)),
-        )
     }
 
     // ---------------------------------------------------------------- Strategies
@@ -161,7 +235,17 @@ class MainActivity : ComponentActivity() {
     private fun StrategiesTab(store: Store, s: Settings, list: List<Strategy>, refresh: () -> Unit, update: (Settings) -> Unit) {
         var editing by remember { mutableStateOf<Strategy?>(null) }
         var importText by remember { mutableStateOf<String?>(null) }
+        var help by remember { mutableStateOf(false) }
         var msg by remember { mutableStateOf<String?>(null) }
+
+        if (help) AlertDialog(onDismissRequest = { help = false },
+            title = { Text("How to add a strategy") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(HELP_TEXT, style = MaterialTheme.typography.bodyMedium)
+                }
+            },
+            confirmButton = { TextButton(onClick = { help = false }) { Text("OK") } })
 
         editing?.let { e ->
             var name by remember(e.id) { mutableStateOf(e.name) }
@@ -172,7 +256,7 @@ class MainActivity : ComponentActivity() {
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true)
-                        OutlinedTextField(args, { args = it }, label = { Text("Arguments (byedpi syntax)") }, minLines = 3)
+                        OutlinedTextField(args, { args = it }, label = { Text("Options (byedpi syntax)") }, minLines = 4, maxLines = 12)
                         problem?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     }
                 },
@@ -201,28 +285,32 @@ class MainActivity : ComponentActivity() {
                 dismissButton = { TextButton(onClick = { importText = null }) { Text("Cancel") } })
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(onClick = { editing = Strategy("", "", "") }) { Text("New") }
                 OutlinedButton(onClick = {
                     (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("strategies", store.exportStrategies()))
                     msg = "Copied to clipboard"
                 }) { Text("Export") }
                 OutlinedButton(onClick = { importText = "" }) { Text("Import") }
+                Spacer(Modifier.weight(1f))
+                FilledTonalIconButton(onClick = { help = true }) { Text("?", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
             }
             msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(list, key = { it.id }) { st ->
-                    Card(Modifier.fillMaxWidth()) {
+                    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = s.strategyId == st.id, onClick = { update(s.copy(strategyId = st.id)) })
                             Column(Modifier.weight(1f).clickable { editing = st }) {
-                                Text(st.name + if (st.builtin) "  (built-in)" else "", style = MaterialTheme.typography.titleSmall)
-                                Text(st.args, style = MaterialTheme.typography.bodySmall)
+                                Text(st.name, style = MaterialTheme.typography.titleSmall)
+                                Text(st.args.lines().filterNot { it.trimStart().startsWith("#") }.joinToString(" ").take(120) + "…",
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (!st.builtin) TextButton(onClick = {
                                 store.saveUserStrategies(store.userStrategies().filter { it.id != st.id })
-                                if (s.strategyId == st.id) update(s.copy(strategyId = Presets.all.first().id))
+                                if (s.strategyId == st.id) update(s.copy(strategyId = Presets.v6.id))
                                 refresh()
                             }) { Text("Delete") }
                         }
@@ -236,12 +324,27 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun DnsTab(s: Settings, update: (Settings) -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(DnsMode.AUTO to "Auto (fastest working DoH)", DnsMode.DOH to "DoH (choose resolver)", DnsMode.SYSTEM to "Plain DNS").forEach { (m, label) ->
+            listOf(DnsMode.AUTO to "Auto - smart (like SimpleDnsCrypt)", DnsMode.DOH to "DoH (choose resolver)", DnsMode.SYSTEM to "Plain DNS").forEach { (m, label) ->
                 Row(Modifier.fillMaxWidth().clickable { update(s.copy(dnsMode = m)) }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = s.dnsMode == m, onClick = { update(s.copy(dnsMode = m)) }); Text(label)
                 }
             }
             if (s.dnsMode == DnsMode.AUTO) {
+                var rank by remember { mutableStateOf(listOf<String>()) }
+                LaunchedEffect(running) {
+                    while (true) {
+                        rank = runCatching { File(filesDir, "dns-status.txt").readLines().drop(1) }.getOrDefault(emptyList())
+                        kotlinx.coroutines.delay(2000)
+                    }
+                }
+                Section("Live servers (re-measured every 20 s, switches automatically)") {
+                    if (!running || rank.isEmpty()) Text("Start Konata to see the live ranking.", style = MaterialTheme.typography.bodySmall)
+                    rank.forEachIndexed { i, l ->
+                        val (n, ms) = l.split("|").let { it[0] to (it.getOrNull(1)?.toLongOrNull() ?: -1L) }
+                        Text((if (i == 0 && ms >= 0) "★ " else "   ") + n + "  —  " + (if (ms < 0) "down" else "$ms ms"),
+                            fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
                 var out by remember { mutableStateOf("") }
                 var busy by remember { mutableStateOf(false) }
                 Button(enabled = !busy, onClick = {
@@ -314,3 +417,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private const val HELP_TEXT = """كيف تضيف استراتيجية جديدة؟
+
+1) اضغط New.
+2) اكتب اسماً، ثم الخيارات بصيغة byedpi (برنامج ciadpi). يمكنك استعمال عدة أسطر، والسطر الذي يبدأ بـ # تعليق.
+3) اضغط Save ثم اختر الاستراتيجية بالدائرة في القائمة، وأعد تشغيل Konata.
+
+أمثلة:
+• بسيطة (الأساسية):
+  --disorder 1 --tlsrec 1+s
+• لمواقع محددة فقط (مجموعة بقائمة نطاقات):
+  --hosts ":youtube.com googlevideo.com" -q1+s -s29+s -o5+s -f-1 -S
+• احتياطية (تُجرَّب عند فشل الاتصال، مثل RST أو timeout):
+  -At,r,s -n www.google.com -Qr -f-1 -S -d1 -d0+sm
+
+أهم الخيارات:
+-d disorder (إرسال الأجزاء بترتيب خاطئ) | -s split (تقسيم) | -o / -q OOB | -f fake (حزمة وهمية) | -t TTL للوهمية | -S md5sig | -n SNI وهمي | -Qr TLS عشوائي | -r تقسيم TLS record | -a عدد حزم UDP/QUIC الوهمية.
+المواضع: 1 = بعد أول بايت، 1+s = عند SNI، 0+sm = منتصف SNI، 2 = بعد اسم الأمر في HTTP.
+المجموعات: كل --auto=none أو -At,r,s أو --hosts أو --proto تبدأ مجموعة جديدة، وتُطبَّق الأولى المطابقة للموقع.
+
+لا تدعم: خيارات تحتاج Root (badsum، seqovl، autottl...) ولا تكتب --ip أو --port أو --daemon، فالتطبيق يضبطها.
+للنقل بين الأجهزة: Export ينسخ JSON، و Import يلصقه.
+
+English: New → name + byedpi options (multi-line, # comments) → Save → select the radio button → restart Konata. Groups start with --auto=none, -At,r,s (failover), --hosts ":a.com b.com" or --proto=h. Root-only options are not supported."""
