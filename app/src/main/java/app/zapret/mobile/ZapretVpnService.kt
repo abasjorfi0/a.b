@@ -78,7 +78,10 @@ class ZapretVpnService : VpnService() {
             VpnLog.w("starting; strategy: ${cfg.getString("strategy")}")
             dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.statusFile = File(filesDir, "dns-status.txt"); it.start() }
 
-            val strategy = ArgParser.tokenize(cfg.getString("strategy"))
+            val dnsOnly = cfg.optString("runMode") == RunMode.DNS_ONLY.name
+            // DNS only: byedpi runs with no desync options at all, so it just relays traffic while the DNS engine does its job.
+            val strategy = if (dnsOnly) emptyList() else ArgParser.tokenize(cfg.getString("strategy"))
+            if (dnsOnly) VpnLog.w("mode: DNS only (no DPI bypass)")
             // -x 1: byedpi logs its decisions (groups, failover, timeouts) to logcat; we mirror them into the app log
             val args = listOf("ciadpi", "--ip", "127.0.0.1", "--port", SOCKS_PORT.toString(), "-x", "1") + strategy
             startNativeLogReader()

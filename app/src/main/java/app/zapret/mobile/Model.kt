@@ -11,6 +11,8 @@ data class Strategy(val id: String, val name: String, val args: String, val buil
 
 enum class DnsMode { SYSTEM, DOH, AUTO }
 enum class AppMode { EXCLUDE, ONLY }
+/** FULL = DPI bypass + DNS, DNS_ONLY = only the smart encrypted DNS (traffic passes through untouched). */
+enum class RunMode { FULL, DNS_ONLY }
 
 data class DohResolver(val name: String, val url: String, val ips: List<String>)
 
@@ -60,6 +62,7 @@ data class Settings(
     val plainDns: String = "8.8.8.8",
     val appMode: AppMode = AppMode.EXCLUDE,
     val apps: Set<String> = emptySet(),
+    val runMode: RunMode = RunMode.FULL,
 ) {
     fun toJson(strategyArgs: String): String = JSONObject()
         .put("strategy", strategyArgs)
@@ -67,12 +70,13 @@ data class Settings(
         .put("dohUrl", dohUrl)
         .put("plainDns", plainDns)
         .put("appMode", appMode.name)
+        .put("runMode", runMode.name)
         .put("apps", JSONArray(apps.toList()))
         .toString()
 
     fun toStored(): JSONObject = JSONObject()
         .put("strategyId", strategyId).put("dnsMode", dnsMode.name).put("dohUrl", dohUrl)
-        .put("plainDns", plainDns).put("appMode", appMode.name).put("apps", JSONArray(apps.toList()))
+        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("apps", JSONArray(apps.toList()))
 
     companion object {
         fun fromStored(o: JSONObject): Settings {
@@ -85,6 +89,7 @@ data class Settings(
                 plainDns = o.optString("plainDns", d.plainDns),
                 appMode = runCatching { AppMode.valueOf(o.optString("appMode")) }.getOrDefault(d.appMode),
                 apps = apps,
+                runMode = runCatching { RunMode.valueOf(o.optString("runMode")) }.getOrDefault(d.runMode),
             )
         }
     }

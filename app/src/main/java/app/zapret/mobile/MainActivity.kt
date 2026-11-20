@@ -36,8 +36,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -46,9 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
 
-private val Blue = Color(0xFF3F6FD8)
-private val Green = Color(0xFF2FA36B)
-private val Cream = Color(0xFFFFF6EC)
+private val Blue = Color(0xFF3558D6)
+private val Green = Color(0xFF1F9D63)
+private val Paper = Color(0xFFF2E9D3)
+private val InkC = Color(0xFF1B2250)
 
 class MainActivity : ComponentActivity() {
     private var running by mutableStateOf(false)
@@ -73,19 +77,20 @@ class MainActivity : ComponentActivity() {
         setContent {
             val dark = isSystemInDarkTheme()
             val scheme = if (dark) darkColorScheme(
-                primary = Color(0xFF8FB0FF), onPrimary = Color(0xFF0B1636), secondary = Color(0xFF5FD8A0),
-                background = Color(0xFF0E1430), surface = Color(0xFF1A2347), surfaceVariant = Color(0xFF243060),
-                onBackground = Color(0xFFEAF0FF), onSurface = Color(0xFFEAF0FF), onSurfaceVariant = Color(0xFFB8C6F0),
-                primaryContainer = Color(0xFF2B3C7A), onPrimaryContainer = Color(0xFFDCE6FF),
+                primary = Color(0xFF86A6FF), onPrimary = Color(0xFF101733), secondary = Color(0xFF55D69A), tertiary = Color(0xFFFFD84D),
+                background = Color(0xFF14172B), surface = Color(0xFF1D2140), surfaceVariant = Color(0xFF262B52), outline = Color(0xFFEDE6D3),
+                onBackground = Color(0xFFEDE6D3), onSurface = Color(0xFFEDE6D3), onSurfaceVariant = Color(0xFFB9B4A6),
+                primaryContainer = Color(0xFF2E3A7A), onPrimaryContainer = Color(0xFFEDE6D3), error = Color(0xFFFF7A93),
             ) else lightColorScheme(
-                primary = Blue, onPrimary = Color.White, secondary = Green,
-                background = Cream, surface = Color.White, surfaceVariant = Color(0xFFE6EEFF),
-                onBackground = Color(0xFF14204A), onSurface = Color(0xFF14204A), onSurfaceVariant = Color(0xFF4A5A8A),
-                primaryContainer = Color(0xFFDCE6FF), onPrimaryContainer = Color(0xFF0E1E55),
+                primary = Blue, onPrimary = Color.White, secondary = Green, tertiary = Color(0xFFFFD84D),
+                background = Paper, surface = Color(0xFFFFFBF1), surfaceVariant = Color(0xFFEADFC4), outline = InkC,
+                onBackground = InkC, onSurface = InkC, onSurfaceVariant = Color(0xFF5A5F82),
+                primaryContainer = Color(0xFFDCE4FF), onPrimaryContainer = InkC, error = Color(0xFFC62E4D),
             )
-            MaterialTheme(colorScheme = scheme) {
-                val bg = if (dark) listOf(Color(0xFF0E1430), Color(0xFF16204A)) else listOf(Color(0xFFD9E7FF), Cream)
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(bg))) { App(store) }
+            val shapes = Shapes(extraSmall = RoundedCornerShape(4.dp), small = RoundedCornerShape(4.dp),
+                medium = RoundedCornerShape(6.dp), large = RoundedCornerShape(8.dp))
+            MaterialTheme(colorScheme = scheme, shapes = shapes) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) { App(store) }
             }
         }
     }
@@ -98,6 +103,64 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() { unregisterReceiver(stateReceiver); super.onDestroy() }
 
+    // ---- small "ink on paper" kit: flat fills, 2dp ink outlines, hard offset shadows, monospace labels
+    private val Mono = FontFamily.Monospace
+
+    @Composable
+    private fun Ink(modifier: Modifier = Modifier, fill: Color = MaterialTheme.colorScheme.surface, content: @Composable ColumnScope.() -> Unit) {
+        val ink = MaterialTheme.colorScheme.onBackground
+        val shape = RoundedCornerShape(6.dp)
+        Box(modifier.padding(end = 4.dp, bottom = 4.dp)) {
+            Column(Modifier.fillMaxWidth()
+                .drawBehind { drawRoundRect(ink, Offset(4.dp.toPx(), 4.dp.toPx()), size, CornerRadius(6.dp.toPx())) }
+                .background(fill, shape).border(2.dp, ink, shape).padding(14.dp), content = content)
+        }
+    }
+
+    @Composable
+    private fun InkButton(text: String, fill: Color, textColor: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+        val ink = MaterialTheme.colorScheme.onBackground
+        val shape = RoundedCornerShape(6.dp)
+        Box(modifier.padding(end = 4.dp, bottom = 4.dp)) {
+            Box(Modifier.fillMaxWidth()
+                .drawBehind { drawRoundRect(ink, Offset(4.dp.toPx(), 4.dp.toPx()), size, CornerRadius(6.dp.toPx())) }
+                .background(fill, shape).border(2.dp, ink, shape).clickable(onClick = onClick).padding(vertical = 16.dp),
+                contentAlignment = Alignment.Center) {
+                Text(text, color = textColor, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = 4.sp)
+            }
+        }
+    }
+
+    @Composable
+    private fun Seg(options: List<String>, selected: Int, enabled: Boolean = true, onSelect: (Int) -> Unit) {
+        val ink = MaterialTheme.colorScheme.onBackground
+        val shape = RoundedCornerShape(6.dp)
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape).border(2.dp, ink, shape)) {
+            options.forEachIndexed { i, t ->
+                if (i > 0) Box(Modifier.width(2.dp).fillMaxHeight().background(ink))
+                Box(Modifier.weight(1f).fillMaxHeight()
+                    .background(if (i == selected) MaterialTheme.colorScheme.tertiary else Color.Transparent)
+                    .clickable(enabled = enabled) { onSelect(i) }.padding(vertical = 11.dp), contentAlignment = Alignment.Center) {
+                    Text(t, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        color = if (i == selected) Color(0xFF1B2250) else ink.copy(alpha = if (enabled) 1f else 0.4f))
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun Label(t: String) = Text(t.uppercase(), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 11.sp,
+        letterSpacing = 2.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    @Composable
+    private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
+        Ink(Modifier.fillMaxWidth()) {
+            Label(title)
+            Spacer(Modifier.height(8.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+        }
+    }
+
     @Composable
     private fun App(store: Store) {
         var tab by remember { mutableIntStateOf(0) }
@@ -105,51 +168,38 @@ class MainActivity : ComponentActivity() {
         var strategies by remember { mutableStateOf(store.allStrategies()) }
         fun update(s: Settings) { settings = s; store.saveSettings(s) }
 
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Image(painterResource(R.drawable.konata), null, Modifier.size(44.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.primary, CircleShape),
+        Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 16.dp)) {
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Image(painterResource(R.drawable.konata), null,
+                    Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)).border(2.dp, MaterialTheme.colorScheme.onBackground, RoundedCornerShape(6.dp)),
                     contentScale = ContentScale.Crop)
                 Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Konata", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Text("DPI bypass + smart DNS", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column {
+                    Text("KONATA", fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = 24.sp, letterSpacing = 5.sp)
+                    Text("dpi bypass + smart dns", fontFamily = Mono, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Box(Modifier.size(12.dp).clip(CircleShape).background(if (running) Green else Color(0xFF9AA3BD)))
             }
-            Box(Modifier.weight(1f).padding(horizontal = 16.dp)) {
+            Seg(listOf("HOME", "STRATEGY", "DNS", "APPS"), tab) { tab = it }
+            Spacer(Modifier.height(14.dp))
+            Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> HomeTab(settings, strategies)
+                    0 -> HomeTab(settings, strategies, ::update)
                     1 -> StrategiesTab(store, settings, strategies, { strategies = store.allStrategies() }, ::update)
                     2 -> DnsTab(settings, ::update)
                     else -> AppsTab(settings, ::update)
                 }
-            }
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                listOf("🏠" to "Home", "🧩" to "Strategy", "🌐" to "DNS", "📱" to "Apps").forEachIndexed { i, (ic, t) ->
-                    NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Text(ic, fontSize = 20.sp) }, label = { Text(t) })
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {
-        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                content()
             }
         }
     }
 
     // ---------------------------------------------------------------- Home
     @Composable
-    private fun HomeTab(s: Settings, strategies: List<Strategy>) {
+    private fun HomeTab(s: Settings, strategies: List<Strategy>, update: (Settings) -> Unit) {
         val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
             if (r.resultCode == RESULT_OK) VpnControl.start(this)
         }
         val chosen = strategies.firstOrNull { it.id == s.strategyId } ?: strategies.first()
+        val dnsOnly = s.runMode == RunMode.DNS_ONLY
         var best by remember { mutableStateOf("") }
         LaunchedEffect(running) {
             while (true) {
@@ -157,49 +207,52 @@ class MainActivity : ComponentActivity() {
                 kotlinx.coroutines.delay(2000)
             }
         }
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp),
-                colors = CardDefaults.cardColors(containerColor = if (running) Green.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surface)) {
-                Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val ink = MaterialTheme.colorScheme.onBackground
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Label("Mode")
+                Seg(listOf("ZAPRET + DNS", "DNS ONLY"), if (dnsOnly) 1 else 0, enabled = !running) {
+                    update(s.copy(runMode = if (it == 1) RunMode.DNS_ONLY else RunMode.FULL))
+                }
+                if (running) Text("Stop first to change the mode.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Ink(Modifier.fillMaxWidth(), fill = if (running) Green.copy(alpha = 0.25f).compositeOver(MaterialTheme.colorScheme.surface) else MaterialTheme.colorScheme.surface) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Image(painterResource(R.drawable.konata), null,
-                        Modifier.size(130.dp).clip(CircleShape).border(4.dp, if (running) Green else MaterialTheme.colorScheme.primary, CircleShape),
-                        contentScale = ContentScale.Crop)
-                    Text(if (running) "Protected" else "Stopped", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    Button(
-                        onClick = {
-                            if (running) VpnControl.stop(this@MainActivity)
-                            else {
-                                ArgParser.validate(chosen.args)?.let { error = it; return@Button }
-                                error = null
-                                val p = VpnService.prepare(this@MainActivity)
-                                if (p != null) launcher.launch(p) else VpnControl.start(this@MainActivity)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(28.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (running) Color(0xFFD9534F) else MaterialTheme.colorScheme.primary),
-                    ) { Text(if (running) "Stop" else "Start", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-                }
-            }
-            Section("Now") {
-                Text("Strategy: ${chosen.name}")
-                val dnsLine = when (s.dnsMode) {
-                    DnsMode.AUTO -> "DNS: Auto" + best.takeIf { running && it.isNotBlank() && !it.startsWith("none") }?.let { "  •  best: " + it.replace("|", " (") + " ms)" }.orEmpty()
-                    DnsMode.DOH -> "DNS: DoH"
-                    DnsMode.SYSTEM -> "DNS: Plain (${s.plainDns})"
-                }
-                Text(dnsLine)
-                Text("Apps: ${if (s.appMode == AppMode.ONLY) "only" else "all except"} ${s.apps.size} selected")
-            }
-            Section("Tips") {
-                Text("Quick button: swipe down the notification panel, tap the pencil (edit) and drag the Konata tile next to Wi-Fi and Bluetooth.",
-                    style = MaterialTheme.typography.bodySmall)
-                OutlinedButton(onClick = {
-                    runCatching {
-                        startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                        Modifier.size(92.dp).clip(RoundedCornerShape(6.dp)).border(2.dp, ink, RoundedCornerShape(6.dp)), contentScale = ContentScale.Crop)
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text(if (running) "ON" else "OFF", fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = 48.sp, lineHeight = 50.sp)
+                        Text(if (running) (if (dnsOnly) "dns only" else "zapret + dns") else "tap start", fontFamily = Mono, fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                }, modifier = Modifier.fillMaxWidth()) { Text("Allow running in the background (battery)") }
+                }
+                error?.let { Spacer(Modifier.height(8.dp)); Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
             }
+            InkButton(if (running) "STOP" else "START",
+                fill = if (running) Color(0xFFFF6F8E) else MaterialTheme.colorScheme.primary,
+                textColor = if (running) InkC else MaterialTheme.colorScheme.onPrimary, modifier = Modifier.fillMaxWidth()) {
+                if (running) VpnControl.stop(this@MainActivity)
+                else {
+                    if (!dnsOnly) ArgParser.validate(chosen.args)?.let { error = it; return@InkButton }
+                    error = null
+                    val p = VpnService.prepare(this@MainActivity)
+                    if (p != null) launcher.launch(p) else VpnControl.start(this@MainActivity)
+                }
+            }
+            Section("Status") {
+                @Composable fun kv(k: String, v: String) = Row {
+                    Text(k.uppercase(), fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.sp, modifier = Modifier.width(88.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(v, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                }
+                kv("strategy", if (dnsOnly) "- (dns only)" else chosen.name)
+                kv("dns", when (s.dnsMode) { DnsMode.AUTO -> "auto"; DnsMode.DOH -> "doh"; DnsMode.SYSTEM -> "plain ${s.plainDns}" })
+                if (s.dnsMode == DnsMode.AUTO) kv("best", if (running && best.isNotBlank() && !best.startsWith("none")) best.replace("|", "  ") + " ms" else "-")
+                kv("apps", (if (s.appMode == AppMode.ONLY) "only " else "all except ") + s.apps.size)
+            }
+            Text("Quick button: pull down the notification panel > pencil > drag the Konata tile.", fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             var log by remember { mutableStateOf("") }
             var open by remember { mutableStateOf(false) }
             val logScroll = rememberScrollState()
@@ -209,9 +262,9 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(log) {
                 if (logScroll.maxValue - logScroll.value < 150) logScroll.scrollTo(logScroll.maxValue)
             }
-            Section("Diagnostics") {
+            Section("Log") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { open = !open }) { Text(if (open) "Hide log" else "Show log") }
+                    OutlinedButton(onClick = { open = !open }) { Text(if (open) "Hide" else "Show") }
                     OutlinedButton(onClick = {
                         val t = VpnLog.read(filesDir, 400)
                         (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("konata log", t))
@@ -219,10 +272,10 @@ class MainActivity : ComponentActivity() {
                     }) { Text("Copy all") }
                     OutlinedButton(onClick = { runCatching { File(filesDir, "vpn.log").writeText("") }; log = "" }) { Text("Clear") }
                 }
-                if (open) Card(Modifier.fillMaxWidth().height(320.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                if (open) Box(Modifier.fillMaxWidth().height(300.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))) {
                     SelectionContainer {
                         Text(log.ifBlank { "(no log yet)" }, Modifier.fillMaxWidth().verticalScroll(logScroll).padding(8.dp),
-                            style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                            fontSize = 11.sp, lineHeight = 14.sp, fontFamily = Mono)
                     }
                 }
             }
@@ -299,9 +352,8 @@ class MainActivity : ComponentActivity() {
             msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(list, key = { it.id }) { st ->
-                    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Ink(Modifier.fillMaxWidth()) {
+                        Row(Modifier, verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = s.strategyId == st.id, onClick = { update(s.copy(strategyId = st.id)) })
                             Column(Modifier.weight(1f).clickable { editing = st }) {
                                 Text(st.name, style = MaterialTheme.typography.titleSmall)
