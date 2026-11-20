@@ -63,9 +63,18 @@ data class Settings(
     val appMode: AppMode = AppMode.EXCLUDE,
     val apps: Set<String> = emptySet(),
     val runMode: RunMode = RunMode.FULL,
+    val autoStart: Boolean = false,
+    val excludeDomains: String = "",   // never touched by the bypass (one per line)
+    val heavyDomains: String = "",     // get the strong X-style chain
 ) {
+    private fun clean(t: String) = t.split(Regex("[\\s,;]+")).map { it.trim().lowercase() }
+        .filter { it.contains('.') && Regex("[a-z0-9.-]+").matches(it) }.distinct().joinToString(" ")
+
+    /** Fills the %EXCLUDE% / %HEAVY% placeholders of a strategy with the user's own domain lists. */
+    fun expand(args: String) = args.replace("%EXCLUDE%", clean(excludeDomains)).replace("%HEAVY%", clean(heavyDomains))
+
     fun toJson(strategyArgs: String): String = JSONObject()
-        .put("strategy", strategyArgs)
+        .put("strategy", expand(strategyArgs))
         .put("dnsMode", dnsMode.name)
         .put("dohUrl", dohUrl)
         .put("plainDns", plainDns)
@@ -76,7 +85,8 @@ data class Settings(
 
     fun toStored(): JSONObject = JSONObject()
         .put("strategyId", strategyId).put("dnsMode", dnsMode.name).put("dohUrl", dohUrl)
-        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("apps", JSONArray(apps.toList()))
+        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("autoStart", autoStart)
+        .put("excludeDomains", excludeDomains).put("heavyDomains", heavyDomains).put("apps", JSONArray(apps.toList()))
 
     companion object {
         fun fromStored(o: JSONObject): Settings {
@@ -89,6 +99,9 @@ data class Settings(
                 plainDns = o.optString("plainDns", d.plainDns),
                 appMode = runCatching { AppMode.valueOf(o.optString("appMode")) }.getOrDefault(d.appMode),
                 apps = apps,
+                autoStart = o.optBoolean("autoStart", false),
+                excludeDomains = o.optString("excludeDomains", ""),
+                heavyDomains = o.optString("heavyDomains", ""),
                 runMode = runCatching { RunMode.valueOf(o.optString("runMode")) }.getOrDefault(d.runMode),
             )
         }
@@ -105,11 +118,11 @@ object Presets {
         -T 4:2000
         # G0 - exclusions (PC list-nodesync.txt) + Instagram/Meta: NO desync. Also the UDP/QUIC/STUN/game fake
         # (PC: fake x8 on QUIC, x6 on STUN/games), because UDP always uses the first group.
-        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com" -a8
+        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com %EXCLUDE%" -a8
         # G1 - YouTube / Google video: disoob + split + fake(md5sig). Confirmed for YouTube video.
         --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
         # G2 - X / Twitter (pages, images, video, GIF): long split chain + TLS record + md5sig fake
-        --auto=none --hosts ":x.com twitter.com twimg.com t.co" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -S -a1
+        --auto=none --hosts ":x.com twitter.com twimg.com t.co %HEAVY%" -d1 -d3+s -s6+s -d9+s -s12+s -d15+s -s20+s -d25+s -s30+s -d35+s -r1+s -S -a1
         # G3 - plain HTTP (port 80): fake(md5sig) + split after the method (PC: fake http md5 + multisplit method+2)
         --auto=none --proto=h -s2 -f-1 -S -a1
         # G4 - everything else (TLS, any port): the proven mobile strategy (disorder + TLS record split)

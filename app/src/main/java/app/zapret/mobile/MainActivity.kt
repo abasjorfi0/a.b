@@ -251,10 +251,22 @@ class MainActivity : ComponentActivity() {
                 if (s.dnsMode == DnsMode.AUTO) kv("best", if (running && best.isNotBlank() && !best.startsWith("none")) best.replace("|", "  ") + " ms" else "-")
                 kv("apps", (if (s.appMode == AppMode.ONLY) "only " else "all except ") + s.apps.size)
             }
+            Ink(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Start on boot", fontWeight = FontWeight.Bold)
+                        Text("Konata turns itself on after the phone restarts (needs the VPN permission granted once).", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = s.autoStart, onCheckedChange = { update(s.copy(autoStart = it)) })
+                }
+            }
             Text("Quick button: pull down the notification panel > pencil > drag the Konata tile.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             var log by remember { mutableStateOf("") }
             var open by remember { mutableStateOf(false) }
+            var simple by remember { mutableStateOf(true) }
+            val shown = if (!simple) log else log.lines().mapNotNull { friendlyLine(it) }.joinToString("\n")
             val logScroll = rememberScrollState()
             LaunchedEffect(open) {
                 while (open) { log = VpnLog.read(filesDir, 400); kotlinx.coroutines.delay(1500) }
@@ -265,6 +277,7 @@ class MainActivity : ComponentActivity() {
             Section("Log") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { open = !open }) { Text(if (open) "Hide" else "Show") }
+                    OutlinedButton(onClick = { simple = !simple }) { Text(if (simple) "Simple" else "Raw") }
                     OutlinedButton(onClick = {
                         val t = VpnLog.read(filesDir, 400)
                         (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("konata log", t))
@@ -274,7 +287,7 @@ class MainActivity : ComponentActivity() {
                 }
                 if (open) Box(Modifier.fillMaxWidth().height(300.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))) {
                     SelectionContainer {
-                        Text(log.ifBlank { "(no log yet)" }, Modifier.fillMaxWidth().verticalScroll(logScroll).padding(8.dp),
+                        Text(shown.ifBlank { "(nothing yet)" }, Modifier.fillMaxWidth().verticalScroll(logScroll).padding(8.dp),
                             fontSize = 11.sp, lineHeight = 14.sp, fontFamily = Mono)
                     }
                 }
@@ -351,6 +364,16 @@ class MainActivity : ComponentActivity() {
             }
             msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    Section("My domains (for V6)") {
+                        Text("One domain per line. Used by the built-in V6 only.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedTextField(s.excludeDomains, { update(s.copy(excludeDomains = it)) }, modifier = Modifier.fillMaxWidth(),
+                            label = { Text("No bypass (leave untouched)") }, minLines = 2, maxLines = 5)
+                        OutlinedTextField(s.heavyDomains, { update(s.copy(heavyDomains = it)) }, modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Strong bypass (like X / Twitter)") }, minLines = 2, maxLines = 5)
+                        Text("Restart Konata to apply.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 items(list, key = { it.id }) { st ->
                     Ink(Modifier.fillMaxWidth()) {
                         Row(Modifier, verticalAlignment = Alignment.CenterVertically) {
@@ -399,15 +422,19 @@ class MainActivity : ComponentActivity() {
                 }
                 var out by remember { mutableStateOf("") }
                 var busy by remember { mutableStateOf(false) }
+                var dom by remember { mutableStateOf("") }
+                OutlinedTextField(dom, { dom = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Test one domain (empty = standard set)") })
                 Button(enabled = !busy, onClick = {
-                    busy = true; out = "Testing (about 30-60 s)..."
+                    busy = true; out = "Testing..."
+                    val one = dom.trim().lowercase().removePrefix("https://").substringBefore('/')
                     Thread {
                         val eng = DnsEngine(DnsMode.AUTO, s.dohUrl, s.plainDns, Resolvers.all(this@MainActivity))
-                        val r = runCatching { eng.selfTest(listOf("pbs.twimg.com", "video.twimg.com", "x.com", "www.instagram.com", "scontent.cdninstagram.com", "rr1---sn-4g5e6nzl.googlevideo.com")) }
+                        val r = runCatching { eng.selfTest(if (one.isNotBlank()) listOf(one) else listOf("pbs.twimg.com", "video.twimg.com", "x.com", "www.instagram.com", "scontent.cdninstagram.com", "rr1---sn-4g5e6nzl.googlevideo.com")) }
                             .getOrElse { "failed: ${it.message}" }
                         runOnUiThread { out = r; busy = false }
                     }.start()
-                }) { Text(if (busy) "Testing..." else "Test DNS now (shows which resolver gives a working IP)") }
+                }) { Text(if (busy) "Testing..." else "Test now (which server gives a working IP)") }
                 if (out.isNotEmpty()) {
                     SelectionContainer { Text(out, style = MaterialTheme.typography.bodySmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) }
                     OutlinedButton(onClick = {
@@ -468,6 +495,15 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+/** Human-friendly view of one log line, or null to hide it in the simple log. */
+private fun friendlyLine(l: String): String? {
+    val t = l.substringBefore(' ', ""); val m = l.substringAfter(' ', "")
+    Regex("byedpi: save: ip=([0-9.]+), id=(\\d+)").find(m)?.let { return "$t  fallback #${it.groupValues[2]} worked for ${it.groupValues[1]}" }
+    Regex("byedpi: unreach ip: ([0-9.]+)").find(m)?.let { return "$t  every strategy failed for ${it.groupValues[1]}" }
+    val keep = listOf("DNS ", "DNS:", "starting", "mode:", "stopping", "START FAILED", "VPN interface", "tunnel started", "proxy listening", "DoH ranking")
+    return if (keep.any { m.startsWith(it) }) l else null
 }
 
 private const val HELP_TEXT = """كيف تضيف استراتيجية جديدة؟
