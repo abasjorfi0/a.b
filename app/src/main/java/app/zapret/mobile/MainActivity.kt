@@ -36,7 +36,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.core.graphics.drawable.toBitmap
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.TimeUnit
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -89,8 +101,11 @@ class MainActivity : ComponentActivity() {
             )
             val shapes = Shapes(extraSmall = RoundedCornerShape(4.dp), small = RoundedCornerShape(4.dp),
                 medium = RoundedCornerShape(6.dp), large = RoundedCornerShape(8.dp))
-            MaterialTheme(colorScheme = scheme, shapes = shapes) {
-                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) { App(store) }
+            // The UI is English: force left-to-right even on an Arabic phone, otherwise everything mirrors.
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                MaterialTheme(colorScheme = scheme, shapes = shapes) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) { App(store) }
+                }
             }
         }
     }
@@ -106,24 +121,51 @@ class MainActivity : ComponentActivity() {
     // ---- small "ink on paper" kit: flat fills, 2dp ink outlines, hard offset shadows, monospace labels
     private val Mono = FontFamily.Monospace
 
+    private val dark @Composable get() = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    /** Outline colour: full ink on paper, softened cream on the dark theme. */
+    private val edge @Composable get() = MaterialTheme.colorScheme.onBackground.copy(alpha = if (dark) 0.55f else 1f)
+    private val shadowC @Composable get() = if (dark) Color(0xFF070914) else MaterialTheme.colorScheme.onBackground
+
+    /** Flat button that replaces the stock pill-shaped Material buttons everywhere (same call shape). */
+    @Composable
+    private fun ChipBase(onClick: () -> Unit, modifier: Modifier, enabled: Boolean, primary: Boolean, content: @Composable RowScope.() -> Unit) {
+        val shape = RoundedCornerShape(6.dp)
+        val fg = if (primary) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onBackground
+        Row(modifier.alpha(if (enabled) 1f else 0.45f).clip(shape)
+            .background(if (primary) MaterialTheme.colorScheme.primary else Color.Transparent)
+            .border(1.5.dp, if (primary) MaterialTheme.colorScheme.primary else edge, shape)
+            .clickable(enabled = enabled, onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            CompositionLocalProvider(LocalContentColor provides fg, LocalTextStyle provides TextStyle(fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp)) { content() }
+        }
+    }
+
+    @Composable
+    private fun OutlinedButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) =
+        ChipBase(onClick, modifier, enabled, false, content)
+
+    @Composable
+    private fun Button(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) =
+        ChipBase(onClick, modifier, enabled, true, content)
+
     @Composable
     private fun Ink(modifier: Modifier = Modifier, fill: Color = MaterialTheme.colorScheme.surface, content: @Composable ColumnScope.() -> Unit) {
-        val ink = MaterialTheme.colorScheme.onBackground
+        val ink = edge; val sh = shadowC
         val shape = RoundedCornerShape(6.dp)
         Box(modifier.padding(end = 4.dp, bottom = 4.dp)) {
             Column(Modifier.fillMaxWidth()
-                .drawBehind { drawRoundRect(ink, Offset(4.dp.toPx(), 4.dp.toPx()), size, CornerRadius(6.dp.toPx())) }
+                .drawBehind { drawRoundRect(sh, Offset(4.dp.toPx(), 4.dp.toPx()), size, CornerRadius(6.dp.toPx())) }
                 .background(fill, shape).border(2.dp, ink, shape).padding(14.dp), content = content)
         }
     }
 
     @Composable
     private fun InkButton(text: String, fill: Color, textColor: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
-        val ink = MaterialTheme.colorScheme.onBackground
+        val ink = edge; val sh = shadowC
         val shape = RoundedCornerShape(6.dp)
         Box(modifier.padding(end = 4.dp, bottom = 4.dp)) {
             Box(Modifier.fillMaxWidth()
-                .drawBehind { drawRoundRect(ink, Offset(4.dp.toPx(), 4.dp.toPx()), size, CornerRadius(6.dp.toPx())) }
+                .drawBehind { drawRoundRect(sh, Offset(4.dp.toPx(), 4.dp.toPx()), size, CornerRadius(6.dp.toPx())) }
                 .background(fill, shape).border(2.dp, ink, shape).clickable(onClick = onClick).padding(vertical = 16.dp),
                 contentAlignment = Alignment.Center) {
                 Text(text, color = textColor, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = 4.sp)
@@ -133,7 +175,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun Seg(options: List<String>, selected: Int, enabled: Boolean = true, onSelect: (Int) -> Unit) {
-        val ink = MaterialTheme.colorScheme.onBackground
+        val ink = edge
         val shape = RoundedCornerShape(6.dp)
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape).border(2.dp, ink, shape)) {
             options.forEachIndexed { i, t ->
@@ -142,7 +184,7 @@ class MainActivity : ComponentActivity() {
                     .background(if (i == selected) MaterialTheme.colorScheme.tertiary else Color.Transparent)
                     .clickable(enabled = enabled) { onSelect(i) }.padding(vertical = 11.dp), contentAlignment = Alignment.Center) {
                     Text(t, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp,
-                        color = if (i == selected) Color(0xFF1B2250) else ink.copy(alpha = if (enabled) 1f else 0.4f))
+                        color = if (i == selected) Color(0xFF1B2250) else MaterialTheme.colorScheme.onBackground.copy(alpha = if (enabled) 1f else 0.4f))
                 }
             }
         }
@@ -171,7 +213,7 @@ class MainActivity : ComponentActivity() {
         Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Image(painterResource(R.drawable.konata), null,
-                    Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)).border(2.dp, MaterialTheme.colorScheme.onBackground, RoundedCornerShape(6.dp)),
+                    Modifier.size(48.dp).clip(RoundedCornerShape(6.dp)).border(2.dp, edge, RoundedCornerShape(6.dp)),
                     contentScale = ContentScale.Crop)
                 Spacer(Modifier.width(12.dp))
                 Column {
@@ -207,7 +249,7 @@ class MainActivity : ComponentActivity() {
                 kotlinx.coroutines.delay(2000)
             }
         }
-        val ink = MaterialTheme.colorScheme.onBackground
+        val ink = edge
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Label("Mode")
@@ -263,6 +305,17 @@ class MainActivity : ComponentActivity() {
             }
             Text("Quick button: pull down the notification panel > pencil > drag the Konata tile.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            var check by remember { mutableStateOf("") }
+            var checking by remember { mutableStateOf(false) }
+            Section("Connection check") {
+                Text("Opens a few sites through Konata and shows which ones answer. Start Konata first.", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(onClick = {
+                    checking = true; check = "Checking..."
+                    runCheck { r -> runOnUiThread { check = r; checking = false } }
+                }, enabled = running && !checking) { Text(if (checking) "Checking..." else "Run check") }
+                if (check.isNotBlank()) SelectionContainer { Text(check, fontFamily = Mono, fontSize = 12.sp, lineHeight = 17.sp) }
+            }
             var log by remember { mutableStateOf("") }
             var open by remember { mutableStateOf(false) }
             var simple by remember { mutableStateOf(true) }
@@ -292,8 +345,31 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            OutlinedButton(onClick = { update(Settings()) }, enabled = !running) { Text("Reset all settings") }
             Spacer(Modifier.height(8.dp))
         }
+    }
+
+    /** Fetches a few sites through byedpi (127.0.0.1:1080) so the result shows what the tunnel really does. */
+    private fun runCheck(done: (String) -> Unit) {
+        Thread {
+            val client = OkHttpClient.Builder().proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", ZapretVpnService.SOCKS_PORT)))
+                .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS).build()
+            val sites = listOf("x.com", "pbs.twimg.com", "video.twimg.com", "abs.twimg.com", "www.instagram.com", "scontent.cdninstagram.com",
+                "www.youtube.com", "i.ytimg.com", "discord.com", "web.whatsapp.com", "www.google.com")
+            val out = java.util.concurrent.ConcurrentHashMap<String, String>()
+            val ts = sites.map { h ->
+                Thread {
+                    val t0 = System.currentTimeMillis()
+                    out[h] = try {
+                        client.newCall(Request.Builder().url("https://$h/").header("User-Agent", "Mozilla/5.0").build()).execute()
+                            .use { "OK   ${it.code}  ${System.currentTimeMillis() - t0} ms" }
+                    } catch (e: Exception) { "FAIL ${e.javaClass.simpleName} ${System.currentTimeMillis() - t0} ms" }
+                }.also { it.start() }
+            }
+            ts.forEach { it.join() }
+            done(sites.joinToString("\n") { String.format("%-26s %s", it, out[it]) })
+        }.start()
     }
 
     // ---------------------------------------------------------------- Strategies
@@ -360,7 +436,7 @@ class MainActivity : ComponentActivity() {
                 }) { Text("Export") }
                 OutlinedButton(onClick = { importText = "" }) { Text("Import") }
                 Spacer(Modifier.weight(1f))
-                FilledTonalIconButton(onClick = { help = true }) { Text("?", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                OutlinedButton(onClick = { help = true }) { Text("?", fontSize = 16.sp) }
             }
             msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -477,19 +553,27 @@ class MainActivity : ComponentActivity() {
                 .filter { it.first != packageName }.distinctBy { it.first }.sortedBy { it.second.lowercase() }
         }
         var q by remember { mutableStateOf("") }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = s.appMode == AppMode.EXCLUDE, onClick = { update(s.copy(appMode = AppMode.EXCLUDE)) }, label = { Text("All except checked") })
-                FilterChip(selected = s.appMode == AppMode.ONLY, onClick = { update(s.copy(appMode = AppMode.ONLY)) }, label = { Text("Only checked") })
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Seg(listOf("ALL EXCEPT CHECKED", "ONLY CHECKED"), if (s.appMode == AppMode.ONLY) 1 else 0) {
+                update(s.copy(appMode = if (it == 1) AppMode.ONLY else AppMode.EXCLUDE))
             }
+            Text(if (s.appMode == AppMode.ONLY) "Only the checked apps go through Konata." else "Every app goes through Konata except the checked ones.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(q, { q = it }, label = { Text("Search") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             LazyColumn {
                 items(apps.filter { q.isBlank() || it.second.contains(q, true) || it.first.contains(q, true) }, key = { it.first }) { (pkg, label) ->
+                    val icon = remember(pkg) { runCatching { pm.getApplicationIcon(pkg).toBitmap(80, 80).asImageBitmap() }.getOrNull() }
                     Row(Modifier.fillMaxWidth().clickable {
                         update(s.copy(apps = if (pkg in s.apps) s.apps - pkg else s.apps + pkg))
-                    }, verticalAlignment = Alignment.CenterVertically) {
+                    }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (icon != null) Image(icon, null, Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)))
+                        else Spacer(Modifier.size(40.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(label, fontWeight = FontWeight.Medium)
+                            Text(pkg, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         Checkbox(checked = pkg in s.apps, onCheckedChange = { update(s.copy(apps = if (it) s.apps + pkg else s.apps - pkg)) })
-                        Column { Text(label); Text(pkg, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }
