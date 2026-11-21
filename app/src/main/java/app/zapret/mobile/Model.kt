@@ -37,7 +37,8 @@ object Resolvers {
 fun Resolvers.all(ctx: Context): List<DohResolver> = allCache ?: synchronized(this) {
     allCache ?: run {
         val extra = runCatching {
-            val a = JSONArray(ctx.assets.open("doh-resolvers.json").bufferedReader().use { it.readText() })
+            val a = JSONArray(File(ctx.filesDir, "doh-resolvers.json").takeIf { it.exists() }?.readText()
+                ?: ctx.assets.open("doh-resolvers.json").bufferedReader().use { it.readText() })
             (0 until a.length()).map {
                 val o = a.getJSONObject(it)
                 val ips = o.getJSONArray("i").let { x -> (0 until x.length()).map { k -> x.getString(k) } }

@@ -303,6 +303,16 @@ class MainActivity : ComponentActivity() {
                     Switch(checked = s.autoStart, onCheckedChange = { update(s.copy(autoStart = it)) })
                 }
             }
+            Section("Always-on") {
+                Text("Let Android restart Konata by itself if it ever stops: open VPN settings, tap the gear next to Konata, turn on Always-on VPN (leave 'Block connections without VPN' off).",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(onClick = { runCatching { startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) } }) { Text("Open VPN settings") }
+            }
+            var sum by remember { mutableStateOf("") }
+            LaunchedEffect(running) {
+                while (true) { sum = summarize(VpnLog.read(filesDir, 3000)); kotlinx.coroutines.delay(3000) }
+            }
+            if (sum.isNotBlank()) Section("This session") { Text(sum, fontFamily = Mono, fontSize = 12.sp, lineHeight = 17.sp) }
             Text("Quick button: pull down the notification panel > pencil > drag the Konata tile.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             var check by remember { mutableStateOf("") }
@@ -480,6 +490,18 @@ class MainActivity : ComponentActivity() {
                     RadioButton(selected = s.dnsMode == m, onClick = { update(s.copy(dnsMode = m)) }); Text(label)
                 }
             }
+            run {
+                var um by remember { mutableStateOf("") }
+                var ub by remember { mutableStateOf(false) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onClick = {
+                        ub = true; um = "Downloading..."
+                        Thread { val r = runCatching { ResolverUpdater.update(this@MainActivity) }.getOrElse { "Failed: ${it.message}" }
+                            runOnUiThread { um = r; ub = false } }.start()
+                    }, enabled = !ub) { Text("Update resolver list") }
+                    Text(um, fontSize = 12.sp, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             if (s.dnsMode == DnsMode.AUTO) {
                 var rank by remember { mutableStateOf(listOf<String>()) }
                 LaunchedEffect(running) {
@@ -579,6 +601,19 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+/** Counts what happened in the current log: resolved names, fallbacks that saved a connection, and the worst addresses. */
+private fun summarize(log: String): String {
+    if (log.isBlank()) return ""
+    val lines = log.lines()
+    val dns = lines.count { Regex("DNS \\S+ -> ").containsMatchIn(it) }
+    val saved = lines.count { it.contains("byedpi: save:") }
+    val failed = lines.filter { it.contains("byedpi: unreach ip:") }.mapNotNull { Regex("([0-9]+\\.[0-9.]+)").find(it.substringAfter("unreach ip:"))?.value }
+    val weak = lines.count { it.contains("NOT reachable") }
+    if (dns == 0 && saved == 0 && failed.isEmpty()) return ""
+    val top = failed.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(3).joinToString { "${it.key} x${it.value}" }
+    return "names resolved   $dns\nfallback saves   $saved\nno working addr  $weak\nstrategies failed ${failed.size}" + if (top.isNotEmpty()) "\nworst: $top" else ""
 }
 
 /** Human-friendly view of one log line, or null to hide it in the simple log. */
