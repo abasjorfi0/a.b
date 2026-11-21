@@ -13,6 +13,9 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.io.DataInputStream
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorCompletionService
@@ -40,6 +43,7 @@ import java.util.concurrent.TimeUnit
 class DnsEngine(
     private val mode: DnsMode, private val dohUrl: String, private val plainDns: String,
     private val all: List<DohResolver>,
+    rulesText: String = "",
 ) {
     companion object {
         const val PORT = 5300
@@ -58,12 +62,49 @@ class DnsEngine(
         private const val GOOGLE = "https://dns.google/dns-query"
     }
 
+    // DNS-over-TLS servers (port 853): extra candidates; failures only lower their rank.
+    private val dot = listOf(
+        DohResolver("DoT Cloudflare", "tls://one.one.one.one", listOf("1.1.1.1", "1.0.0.1")),
+        DohResolver("DoT Google", "tls://dns.google", listOf("8.8.8.8", "8.8.4.4")),
+        DohResolver("DoT Quad9", "tls://dns.quad9.net", listOf("9.9.9.9", "149.112.112.112")),
+        DohResolver("DoT AdGuard", "tls://dns.adguard-dns.com", listOf("94.140.14.14", "94.140.15.15")),
+    )
     private val resolvers: List<DohResolver> =
-        all + if (all.none { it.url == dohUrl }) listOf(DohResolver("custom", dohUrl, emptyList())) else emptyList()
+        all + dot + if (all.none { it.url == dohUrl }) listOf(DohResolver("custom", dohUrl, emptyList())) else emptyList()
     private val byUrl = resolvers.associateBy { it.url }
     private val ipsByHost: Map<String, List<String>> =
         resolvers.groupBy { it.url.substringAfter("//").substringBefore("/").substringBefore(":") }
             .mapValues { e -> e.value.flatMap { it.ips }.distinct() }
+    // ---- per-domain rules --------------------------------------------------------------------
+    private class Rule(val suffix: String, val kind: Int, val ips: List<String>, val target: String) // kind: 0 ip, 1 dns, 2 block
+    private val rules: List<Rule> = rulesText.lines().mapNotNull { raw ->
+        val t = raw.substringBefore('#').trim().split(Regex("\\s+"))
+        if (t.size < 2 || t[0].isEmpty()) return@mapNotNull null
+        val d = t[0].lowercase().removePrefix("*.")
+        when {
+            t[1] == "block" -> Rule(d, 2, emptyList(), "")
+            t[1].startsWith("dns:") -> Rule(d, 1, emptyList(), t[1].removePrefix("dns:"))
+            t.drop(1).all { DnsRules.ipv4.matches(it) } -> Rule(d, 0, t.drop(1), "")
+            else -> null
+        }
+    }
+    private fun matchRule(name: String): Rule? =
+        rules.filter { name == it.suffix || name.endsWith("." + it.suffix) }.maxByOrNull { it.suffix.length }
+
+    private fun applyRule(rule: Rule, q: ByteArray, name: String): Res? = when (rule.kind) {
+        0 -> { VpnLog.w("DNS $name -> ${rule.ips.first()} (your rule)"); Res(buildAnswer(q, rule.ips), TTL_OK) }
+        2 -> { VpnLog.w("DNS $name -> blocked (your rule)"); Res(q.copyOf().also { a -> a[2] = (a[2].toInt() or 0x80).toByte(); a[3] = ((a[3].toInt() and 0xF0) or 3).toByte() }, TTL_OK) }
+        else -> {
+            val t = rule.target
+            val ans: ByteArray? = if (DnsRules.ipv4.matches(t)) plain(q, t) else {
+                val r = byUrl[t] ?: resolvers.firstOrNull { it.name.equals(t, true) } ?: resolvers.firstOrNull { it.name.contains(t, true) }
+                if (r == null) { VpnLog.w("DNS rule for $name: unknown resolver '$t'"); null } else doh(r, q)
+            }
+            if (ans != null) VpnLog.w("DNS $name -> ${parseA(ans).firstOrNull() ?: "(none)"} via ${rule.target} (your rule)")
+            ans?.let { Res(it, TTL_OK) }
+        }
+    }
+
     private val isp = DohResolver("ISP-DNS", "isp://system", emptyList())
 
     private val bootstrap = object : Dns {
@@ -155,7 +196,7 @@ class DnsEngine(
     fun start() {
         val s = DatagramSocket(null).apply { reuseAddress = true; bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT)) }
         sock = s
-        VpnLog.w("DNS engine listening on 127.0.0.1:$PORT (mode=$mode)")
+        VpnLog.w("DNS engine listening on 127.0.0.1:$PORT (mode=$mode, ${rules.size} custom rules)")
         if (mode == DnsMode.AUTO) pool.execute {
             probeAll()
             var n = 0
@@ -214,7 +255,12 @@ class DnsEngine(
     private val refreshing = ConcurrentHashMap.newKeySet<String>()
     private fun isGood(d: ByteArray) = d.size > 12 && (d[3].toInt() and 0x0F) == 0 && ((d[6].toInt() shl 8) or (d[7].toInt() and 0xFF)) != 0
 
-    private fun resolveUncached(q: ByteArray, name: String): Res? = when (mode) {
+    private fun resolveUncached(q: ByteArray, name: String): Res? {
+        matchRule(name.lowercase())?.let { rule -> applyRule(rule, q, name)?.let { return it } }
+        return resolveByMode(q, name)
+    }
+
+    private fun resolveByMode(q: ByteArray, name: String): Res? = when (mode) {
         DnsMode.SYSTEM -> plain(q)?.let { Res(it, TTL_OK) }
         DnsMode.DOH -> (byUrl[dohUrl]?.let { doh(it, q) } ?: plain(q))?.let { Res(it, TTL_OK) }
         DnsMode.AUTO -> autoResolve(q, name.lowercase())
@@ -304,7 +350,24 @@ class DnsEngine(
         return Res(w.answer, TTL_WEAK)
     }
 
-    private fun doh(r: DohResolver, q: ByteArray): ByteArray? = try {
+    private fun doh(r: DohResolver, q: ByteArray): ByteArray? = if (r.url.startsWith("tls://")) dot(r, q) else dohHttp(r, q)
+
+    /** DNS over TLS: 2-byte length prefix + message on port 853, certificate host name verified. */
+    private fun dot(r: DohResolver, q: ByteArray): ByteArray? = try {
+        val host = r.url.removePrefix("tls://")
+        val raw = Socket(); raw.connect(InetSocketAddress(r.ips.firstOrNull() ?: host, 853), 3000); raw.soTimeout = 3000
+        val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(raw, host, 853, true) as SSLSocket
+        ssl.use {
+            it.sslParameters = it.sslParameters.also { p -> p.endpointIdentificationAlgorithm = "HTTPS" }
+            it.startHandshake()
+            val o = it.outputStream
+            o.write(byteArrayOf((q.size shr 8).toByte(), q.size.toByte())); o.write(q); o.flush()
+            val inp = DataInputStream(it.inputStream)
+            val n = inp.readUnsignedShort(); val b = ByteArray(n); inp.readFully(b); b
+        }
+    } catch (e: Exception) { null }
+
+    private fun dohHttp(r: DohResolver, q: ByteArray): ByteArray? = try {
         val req = Request.Builder().url(r.url).header("Accept", "application/dns-message")
             .post(q.toRequestBody(DNS_MSG)).build()
         direct.newCall(req).execute().use { if (it.isSuccessful) it.body?.bytes() else null }
@@ -313,10 +376,10 @@ class DnsEngine(
         null
     }
 
-    private fun plain(q: ByteArray): ByteArray? = try {
+    private fun plain(q: ByteArray, server: String = plainDns): ByteArray? = try {
         DatagramSocket().use { s ->
             s.soTimeout = 3000
-            s.send(DatagramPacket(q, q.size, InetAddress.getByName(plainDns), 53))
+            s.send(DatagramPacket(q, q.size, InetAddress.getByName(server), 53))
             val b = ByteArray(1500); val p = DatagramPacket(b, b.size)
             s.receive(p); p.data.copyOf(p.length)
         }

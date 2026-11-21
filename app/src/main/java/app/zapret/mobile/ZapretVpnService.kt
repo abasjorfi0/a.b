@@ -67,6 +67,7 @@ class ZapretVpnService : VpnService() {
         startForegroundNotification()
         val cfg = intent?.getStringExtra(EXTRA_CONFIG)
         if (cfg == null) { shutdown(); return START_NOT_STICKY }
+        runCatching { File(filesDir, "applied.json").writeText(cfg) }
         Thread { start(JSONObject(cfg)) }.start()
         return START_NOT_STICKY
     }
@@ -76,7 +77,7 @@ class ZapretVpnService : VpnService() {
             VpnLog.init(filesDir, reset = true)
             val dnsMode = DnsMode.valueOf(cfg.getString("dnsMode"))
             VpnLog.w("starting; strategy: ${cfg.getString("strategy")}")
-            dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this)).also { it.statusFile = File(filesDir, "dns-status.txt"); it.start() }
+            dns = DnsEngine(dnsMode, cfg.getString("dohUrl"), cfg.getString("plainDns"), Resolvers.all(this), cfg.optString("rules")).also { it.statusFile = File(filesDir, "dns-status.txt"); it.start() }
 
             val dnsOnly = cfg.optString("runMode") == RunMode.DNS_ONLY.name
             // DNS only: byedpi runs with no desync options at all, so it just relays traffic while the DNS engine does its job.

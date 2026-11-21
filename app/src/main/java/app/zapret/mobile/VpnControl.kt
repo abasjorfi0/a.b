@@ -14,15 +14,21 @@ object VpnControl {
         return alive && File(ctx.filesDir, "running").exists()
     }
 
-    fun start(ctx: Context) {
+    /** Returns false (and tells the user) when the settings would make the VPN capture everything by mistake. */
+    fun start(ctx: Context): Boolean {
         val store = Store(ctx)
         val s = store.settings()
+        if (s.appMode == AppMode.ONLY && s.apps.isEmpty()) {
+            android.widget.Toast.makeText(ctx, "Apps tab: 'Only checked' needs at least one app", android.widget.Toast.LENGTH_LONG).show()
+            return false
+        }
         val st = store.find(s.strategyId)
         ContextCompat.startForegroundService(
             ctx,
             Intent(ctx, ZapretVpnService::class.java).setAction(ZapretVpnService.ACTION_START)
                 .putExtra(ZapretVpnService.EXTRA_CONFIG, s.toJson(st.args)),
         )
+        return true
     }
 
     fun stop(ctx: Context) {

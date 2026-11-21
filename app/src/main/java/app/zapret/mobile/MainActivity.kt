@@ -277,10 +277,24 @@ class MainActivity : ComponentActivity() {
                 if (running) VpnControl.stop(this@MainActivity)
                 else {
                     if (!dnsOnly) ArgParser.validate(chosen.args)?.let { error = it; return@InkButton }
+                    if (s.appMode == AppMode.ONLY && s.apps.isEmpty()) { error = "Apps tab: 'Only checked' needs at least one app."; return@InkButton }
+                    DnsRules.validate(s.rules).firstOrNull()?.let { error = "Domain rules: $it"; return@InkButton }
                     error = null
                     val p = VpnService.prepare(this@MainActivity)
                     if (p != null) launcher.launch(p) else VpnControl.start(this@MainActivity)
                 }
+            }
+            val changed = remember(s, running) {
+                running && runCatching { File(filesDir, "applied.json").readText() != s.toJson(chosen.args) }.getOrDefault(false)
+            }
+            if (changed) Ink(Modifier.fillMaxWidth(), fill = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.3f).compositeOver(MaterialTheme.colorScheme.surface)) {
+                Text("Settings changed while running.", fontWeight = FontWeight.Bold)
+                Text("The running session still uses the old ones.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = {
+                    VpnControl.stop(this@MainActivity)
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ VpnControl.start(this@MainActivity) }, 1500)
+                }) { Text("Restart now") }
             }
             Section("Status") {
                 @Composable fun kv(k: String, v: String) = Row {
@@ -296,11 +310,11 @@ class MainActivity : ComponentActivity() {
             Ink(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Strong mode", fontWeight = FontWeight.Bold)
+                        Text(if (dnsOnly) "Strong mode (not used in DNS only)" else "Strong mode", fontWeight = FontWeight.Bold)
                         Text("Adds a fake TLS packet (random, SNI www.google.com, md5sig) to every default connection and sends 14 fake QUIC packets instead of 8. Try it when a site still fails. It can slow some sites. Restart to apply.", fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(checked = s.strong, onCheckedChange = { update(s.copy(strong = it)) })
+                    Switch(checked = s.strong, enabled = !dnsOnly, onCheckedChange = { update(s.copy(strong = it)) })
                 }
             }
             Ink(Modifier.fillMaxWidth()) {
@@ -467,6 +481,7 @@ class MainActivity : ComponentActivity() {
                             label = { Text("No bypass (leave untouched)") }, minLines = 2, maxLines = 5)
                         OutlinedTextField(s.heavyDomains, { update(s.copy(heavyDomains = it)) }, modifier = Modifier.fillMaxWidth(),
                             label = { Text("Strong bypass (like X / Twitter)") }, minLines = 2, maxLines = 5)
+                        s.overlap().take(3).forEach { Text("$it is in both lists - no bypass wins.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
                         Text("Restart Konata to apply.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -512,6 +527,19 @@ class MainActivity : ComponentActivity() {
                     Text(um, fontSize = 12.sp, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            Section("Domain rules (override everything)") {
+                Text("One per line. A domain also covers its subdomains.\n" +
+                    "pbs.twimg.com 104.244.43.1     fixed IP\n" +
+                    "example.com dns:1.1.1.1          ask this DNS\n" +
+                    "example.com dns:Cloudflare       ask this DoH/DoT\n" +
+                    "ads.example.com block            does not exist", fontFamily = Mono, fontSize = 11.sp, lineHeight = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(s.rules, { update(s.copy(rules = it)) }, modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8,
+                    label = { Text("Rules") })
+                val bad = remember(s.rules) { DnsRules.validate(s.rules) }
+                bad.take(3).forEach { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                Text("Restart Konata to apply.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (s.dnsMode == DnsMode.AUTO) {
                 var rank by remember { mutableStateOf(listOf<String>()) }
                 LaunchedEffect(running) {
@@ -537,7 +565,7 @@ class MainActivity : ComponentActivity() {
                     busy = true; out = "Testing..."
                     val one = dom.trim().lowercase().removePrefix("https://").substringBefore('/')
                     Thread {
-                        val eng = DnsEngine(DnsMode.AUTO, s.dohUrl, s.plainDns, Resolvers.all(this@MainActivity))
+                        val eng = DnsEngine(DnsMode.AUTO, s.dohUrl, s.plainDns, Resolvers.all(this@MainActivity), s.rules)
                         val r = runCatching { eng.selfTest(if (one.isNotBlank()) listOf(one) else listOf("pbs.twimg.com", "video.twimg.com", "x.com", "www.instagram.com", "scontent.cdninstagram.com", "rr1---sn-4g5e6nzl.googlevideo.com")) }
                             .getOrElse { "failed: ${it.message}" }
                         runOnUiThread { out = r; busy = false }

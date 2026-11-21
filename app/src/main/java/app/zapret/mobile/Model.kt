@@ -65,12 +65,16 @@ data class Settings(
     val apps: Set<String> = emptySet(),
     val runMode: RunMode = RunMode.FULL,
     val autoStart: Boolean = false,
+    val rules: String = "",          // per-domain DNS rules (see validateRules)
     val strong: Boolean = false,       // extra-strong bypass for the default group + more QUIC fakes
     val excludeDomains: String = "",   // never touched by the bypass (one per line)
     val heavyDomains: String = "",     // get the strong X-style chain
 ) {
     private fun clean(t: String) = t.split(Regex("[\\s,;]+")).map { it.trim().lowercase() }
         .filter { it.contains('.') && Regex("[a-z0-9.-]+").matches(it) }.distinct().joinToString(" ")
+
+    /** Domains that are in both the 'no bypass' and the 'strong bypass' lists (the no-bypass list wins). */
+    fun overlap(): List<String> = clean(excludeDomains).split(' ').filter { it.isNotEmpty() }.intersect(clean(heavyDomains).split(' ').toSet()).toList()
 
     /** Fills the %EXCLUDE% / %HEAVY% placeholders of a strategy with the user's own domain lists. */
     fun expand(args: String) = args.replace("%EXCLUDE%", clean(excludeDomains)).replace("%HEAVY%", clean(heavyDomains))
@@ -84,12 +88,12 @@ data class Settings(
         .put("plainDns", plainDns)
         .put("appMode", appMode.name)
         .put("runMode", runMode.name)
-        .put("apps", JSONArray(apps.toList()))
+        .put("apps", JSONArray(apps.sorted()))
         .toString()
 
     fun toStored(): JSONObject = JSONObject()
         .put("strategyId", strategyId).put("dnsMode", dnsMode.name).put("dohUrl", dohUrl)
-        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("autoStart", autoStart).put("strong", strong)
+        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("autoStart", autoStart).put("strong", strong).put("rules", rules)
         .put("excludeDomains", excludeDomains).put("heavyDomains", heavyDomains).put("apps", JSONArray(apps.toList()))
 
     companion object {
@@ -105,6 +109,7 @@ data class Settings(
                 apps = apps,
                 autoStart = o.optBoolean("autoStart", false),
                 strong = o.optBoolean("strong", false),
+                rules = o.optString("rules", ""),
                 excludeDomains = o.optString("excludeDomains", ""),
                 heavyDomains = o.optString("heavyDomains", ""),
                 runMode = runCatching { RunMode.valueOf(o.optString("runMode")) }.getOrDefault(d.runMode),
@@ -227,5 +232,32 @@ object ArgParser {
         t.firstOrNull { it.substringBefore('=') in forbidden }?.let { return "Option $it is set by the app and cannot be used here" }
         if (t.any { it == "--drop-sack" || it == "-Y" }) return "--drop-sack needs root and is not supported"
         return null
+    }
+}
+
+/**
+ * Per-domain DNS rules, one per line (# = comment). A domain also matches its subdomains.
+ *   example.com 1.2.3.4 [5.6.7.8]   always answer with these IPv4 addresses
+ *   example.com dns:1.1.1.1         ask this plain DNS server
+ *   example.com dns:Cloudflare      ask this DoH/DoT resolver (name or https:// URL)
+ *   example.com block               answer "does not exist"
+ */
+object DnsRules {
+    val ipv4 = Regex("""(\d{1,3}\.){3}\d{1,3}""")
+
+    /** Human-readable problems, one per bad line (empty = all good). */
+    fun validate(text: String): List<String> = text.lines().mapIndexedNotNull { i, raw ->
+        val l = raw.substringBefore('#').trim()
+        if (l.isEmpty()) return@mapIndexedNotNull null
+        val t = l.split(Regex("\\s+"))
+        val dom = t[0].removePrefix("*.")
+        when {
+            !Regex("[A-Za-z0-9.-]+\\.[A-Za-z]{2,}|[A-Za-z0-9.-]+").matches(dom) -> "line ${i + 1}: bad domain '${t[0]}'"
+            t.size < 2 -> "line ${i + 1}: missing action"
+            t[1] == "block" -> null
+            t[1].startsWith("dns:") && t[1].length > 4 -> null
+            t.drop(1).all { ipv4.matches(it) && it.split('.').all { p -> p.toInt() in 0..255 } } -> null
+            else -> "line ${i + 1}: unknown action '${t[1]}'"
+        }
     }
 }
