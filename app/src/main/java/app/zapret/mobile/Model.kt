@@ -65,6 +65,7 @@ data class Settings(
     val apps: Set<String> = emptySet(),
     val runMode: RunMode = RunMode.FULL,
     val autoStart: Boolean = false,
+    val strong: Boolean = false,       // extra-strong bypass for the default group + more QUIC fakes
     val excludeDomains: String = "",   // never touched by the bypass (one per line)
     val heavyDomains: String = "",     // get the strong X-style chain
 ) {
@@ -73,6 +74,8 @@ data class Settings(
 
     /** Fills the %EXCLUDE% / %HEAVY% placeholders of a strategy with the user's own domain lists. */
     fun expand(args: String) = args.replace("%EXCLUDE%", clean(excludeDomains)).replace("%HEAVY%", clean(heavyDomains))
+        .replace("%STRONG%", if (strong) "-f-1 -S -n www.google.com -Qr" else "")
+        .replace("%UDPN%", if (strong) "14" else "8")
 
     fun toJson(strategyArgs: String): String = JSONObject()
         .put("strategy", expand(strategyArgs))
@@ -86,7 +89,7 @@ data class Settings(
 
     fun toStored(): JSONObject = JSONObject()
         .put("strategyId", strategyId).put("dnsMode", dnsMode.name).put("dohUrl", dohUrl)
-        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("autoStart", autoStart)
+        .put("plainDns", plainDns).put("appMode", appMode.name).put("runMode", runMode.name).put("autoStart", autoStart).put("strong", strong)
         .put("excludeDomains", excludeDomains).put("heavyDomains", heavyDomains).put("apps", JSONArray(apps.toList()))
 
     companion object {
@@ -101,6 +104,7 @@ data class Settings(
                 appMode = runCatching { AppMode.valueOf(o.optString("appMode")) }.getOrDefault(d.appMode),
                 apps = apps,
                 autoStart = o.optBoolean("autoStart", false),
+                strong = o.optBoolean("strong", false),
                 excludeDomains = o.optString("excludeDomains", ""),
                 heavyDomains = o.optString("heavyDomains", ""),
                 runMode = runCatching { RunMode.valueOf(o.optString("runMode")) }.getOrDefault(d.runMode),
@@ -119,7 +123,7 @@ object Presets {
         -T 4:2000
         # G0 - exclusions (PC list-nodesync.txt) + Instagram/Meta: NO desync. Also the UDP/QUIC/STUN/game fake
         # (PC: fake x8 on QUIC, x6 on STUN/games), because UDP always uses the first group.
-        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com %EXCLUDE%" -a8
+        --hosts ":ubi.com ubisoft.com ea.com easports.com origin.com origin-a.akamaihd.net instagram.com cdninstagram.com fbcdn.net facebook.com fb.com facebook.net fbsbx.com %EXCLUDE%" -a%UDPN%
         # G1 - YouTube / Google video: disoob + split + fake(md5sig). Confirmed for YouTube video.
         --auto=none --hosts ":googlevideo.com youtube.com youtu.be ytimg.com ggpht.com googleusercontent.com youtube-nocookie.com" -q1+s -s29+s -s30+s -s14+s -o5+s -f-1 -S -a1
         # G2 - X / Twitter (pages, images, video, GIF): long split chain + TLS record + md5sig fake
@@ -127,7 +131,7 @@ object Presets {
         # G3 - plain HTTP (port 80): fake(md5sig) + split after the method (PC: fake http md5 + multisplit method+2)
         --auto=none --proto=h -s2 -f-1 -S -a1
         # G4 - everything else (TLS, any port): the proven mobile strategy (disorder + TLS record split)
-        --auto=none --disorder 1 --tlsrec 1+s -a1
+        --auto=none --disorder 1 --tlsrec 1+s %STRONG% -a1
         # ---- failover groups (PC circular strategies 1,2,3 first, then extra community ones) ----
         # PC 1: fake md5 (random TLS, SNI www.google.com) + multidisorder at 1 and SNI middle
         -At,r,s -n www.google.com -Qr -f-1 -S -d1 -d0+sm -a1

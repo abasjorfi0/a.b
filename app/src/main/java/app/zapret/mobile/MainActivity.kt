@@ -296,6 +296,16 @@ class MainActivity : ComponentActivity() {
             Ink(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
+                        Text("Strong mode", fontWeight = FontWeight.Bold)
+                        Text("Adds a fake TLS packet (random, SNI www.google.com, md5sig) to every default connection and sends 14 fake QUIC packets instead of 8. Try it when a site still fails. It can slow some sites. Restart to apply.", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = s.strong, onCheckedChange = { update(s.copy(strong = it)) })
+                }
+            }
+            Ink(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
                         Text("Start on boot", fontWeight = FontWeight.Bold)
                         Text("Konata turns itself on after the phone restarts (needs the VPN permission granted once).", fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
