@@ -540,6 +540,32 @@ class MainActivity : ComponentActivity() {
                 bad.take(3).forEach { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
                 Text("Restart Konata to apply.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Section("Cloudflare clean-IP scanner") {
+                Text("Finds Cloudflare addresses that answer from your network (for sites hosted on Cloudflare). Works with or without Konata.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                var cfBusy by remember { mutableStateOf(false) }
+                var cfStatus by remember { mutableStateOf("") }
+                var cfRes by remember { mutableStateOf(listOf<Pair<String, Long>>()) }
+                var cfDom by remember { mutableStateOf("") }
+                OutlinedButton(onClick = {
+                    cfBusy = true; cfRes = emptyList(); cfStatus = "Scanning..."
+                    Thread {
+                        val r = runCatching { CfScanner.scan("speed.cloudflare.com", 150) { d, f -> runOnUiThread { cfStatus = "Scanned $d / 150, found $f" } } }
+                            .getOrDefault(emptyList())
+                        runOnUiThread { cfRes = r.take(10); cfStatus = if (r.isEmpty()) "No working address found - this network blocks them." else "Done: ${r.size} working addresses."; cfBusy = false }
+                    }.start()
+                }, enabled = !cfBusy) { Text(if (cfBusy) "Scanning..." else "Scan Cloudflare") }
+                if (cfStatus.isNotBlank()) Text(cfStatus, fontSize = 12.sp)
+                if (cfRes.isNotEmpty()) {
+                    SelectionContainer { Text(cfRes.joinToString("\n") { String.format("%-16s %d ms", it.first, it.second) }, fontFamily = Mono, fontSize = 12.sp, lineHeight = 17.sp) }
+                    OutlinedTextField(cfDom, { cfDom = it }, singleLine = true, modifier = Modifier.fillMaxWidth(), label = { Text("Domain to pin these IPs to (e.g. discord.com)") })
+                    OutlinedButton(onClick = {
+                        val d = cfDom.trim().lowercase().removePrefix("https://").substringBefore('/')
+                        update(s.copy(rules = s.rules.trimEnd() + (if (s.rules.isBlank()) "" else "\n") + "$d " + cfRes.take(3).joinToString(" ") { it.first }))
+                        cfDom = ""
+                    }, enabled = cfDom.isNotBlank()) { Text("Add as rule (top 3)") }
+                }
+            }
             if (s.dnsMode == DnsMode.AUTO) {
                 var rank by remember { mutableStateOf(listOf<String>()) }
                 LaunchedEffect(running) {
